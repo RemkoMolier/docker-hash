@@ -154,58 +154,50 @@ func Compute(opts Options) (string, error) {
 		}
 	}
 
-	// 4. Hash the FROM base images. Each FROM line contributes one entry,
+	// 4. Hash the FROM base images. Each FROM line contributes one entry
 	// in declaration order, so the hash captures any drift in the upstream
-	// registry. There are four behaviour modes here, derived from
-	// opts.BaseImageResolver and opts.NoExpandArgs:
-	//
-	//   resolver != nil, !NoExpandArgs   → "resolved" mode
-	//     Expand FROM with ARGs, fetch digests via the resolver, emit
-	//     "resolved:<plat>:<canonical>@sha256:..." entries.
-	//
-	//   resolver == nil, !NoExpandArgs   → "offline" mode
-	//     Expand FROM with ARGs, do NOT call the network, emit
-	//     "offline:<plat>:<canonical>" entries — canonical-but-unresolved.
-	//     This is the right shape for offline runs and for builds where the
-	//     registry is unavailable. Different from v0.1.x by design: the user
-	//     opted out of network access, not out of expansion.
-	//
-	//   resolver != nil, NoExpandArgs    → "strict resolved" mode
-	//     Do NOT expand ARGs in FROM. A FROM line containing "$" is rejected
-	//     with a diagnostic. Plain references are resolved via the resolver
-	//     and emitted as "resolved:" entries (same shape as the default
-	//     mode). This enforces "all FROMs must be expansion-free" in CI.
-	//
-	//   resolver == nil, NoExpandArgs    → "v0.1.x compat" mode
-	//     Section 4 is skipped entirely. The FROM text still affects the
-	//     hash via section 1. The resulting digest is bit-for-bit identical
-	//     to a v0.1.x hash for the same inputs.
-	switch {
-	case opts.BaseImageResolver == nil && opts.NoExpandArgs:
-		// v0.1.x compat: skip section 4 entirely.
-	case opts.BaseImageResolver != nil && opts.NoExpandArgs:
-		// Strict resolved: don't expand, fail fast on $.
-		writeSection(h, "base-images")
-		if err := hashBaseImagesStrict(h, pr.FromRefs, opts); err != nil {
-			return "", fmt.Errorf("hash base images: %w", err)
-		}
-	case opts.BaseImageResolver == nil:
-		// Offline: expand, no network.
-		writeSection(h, "base-images")
-		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults, pr.PreFromArgNames)
-		if err := hashBaseImagesOffline(h, pr.FromRefs, pr.StageAliases, lookup); err != nil {
-			return "", fmt.Errorf("hash base images: %w", err)
-		}
-	default:
-		// Resolved: expand, hit registry.
-		writeSection(h, "base-images")
-		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults, pr.PreFromArgNames)
-		if err := hashBaseImages(h, pr.FromRefs, pr.StageAliases, opts, lookup); err != nil {
-			return "", fmt.Errorf("hash base images: %w", err)
-		}
+	// registry.
+	if err := hashBaseImagesSection(h, pr, opts); err != nil {
+		return "", fmt.Errorf("hash base images: %w", err)
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// hashBaseImagesSection writes the "base-images" section of the hash
+// according to the four behaviour modes derived from opts.BaseImageResolver
+// and opts.NoExpandArgs:
+//
+//   - resolver != nil, !NoExpandArgs → "resolved" mode (default)
+//     Expand FROM with ARGs, fetch digests via the resolver, emit
+//     "resolved:<plat>:<canonical>@sha256:..." entries.
+//   - resolver == nil, !NoExpandArgs → "offline" mode
+//     Expand FROM with ARGs, do NOT call the network, emit
+//     "offline:<plat>:<canonical>" entries (canonical-but-unresolved).
+//   - resolver != nil, NoExpandArgs → "strict resolved" mode
+//     Do NOT expand ARGs in FROM. A FROM line containing "$" is rejected.
+//     Plain references are still resolved via the resolver. Used to enforce
+//     "all FROMs must be expansion-free" in CI.
+//   - resolver == nil, NoExpandArgs → "v0.1.x compat" mode
+//     Section 4 is skipped entirely. The FROM text still affects the hash
+//     via section 1. Bit-for-bit identical to a v0.1.x hash for the same
+//     inputs.
+func hashBaseImagesSection(h hash.Hash, pr *dockerfile.ParseResult, opts Options) error {
+	if opts.BaseImageResolver == nil && opts.NoExpandArgs {
+		// v0.1.x compat: skip section 4 entirely.
+		return nil
+	}
+	writeSection(h, "base-images")
+	switch {
+	case opts.BaseImageResolver != nil && opts.NoExpandArgs:
+		return hashBaseImagesStrict(h, pr.FromRefs, opts)
+	case opts.BaseImageResolver == nil:
+		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults, pr.PreFromArgNames)
+		return hashBaseImagesOffline(h, pr.FromRefs, pr.StageAliases, lookup)
+	default:
+		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults, pr.PreFromArgNames)
+		return hashBaseImages(h, pr.FromRefs, pr.StageAliases, opts, lookup)
+	}
 }
 
 // autoPlatformArgs is the set of ARG names Docker automatically supplies
@@ -728,9 +720,44 @@ func resolvePattern(contextDir, pattern string, pm, excludePM *patternmatcher.Pa
 		return []contextEntry{{relPath: pattern}}, nil
 	}
 
-	absContext, err := filepath.Abs(contextDir)
+	absContext, matches, err := globPatternMatches(contextDir, pattern)
 	if err != nil {
 		return nil, err
+	}
+
+	var entries []contextEntry
+	var anyIgnored bool
+	for _, abs := range matches {
+		matchEntries, matchIgnored, err := processPatternMatch(absContext, abs, pattern, pm, excludePM)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, matchEntries...)
+		if matchIgnored {
+			anyIgnored = true
+		}
+	}
+
+	if len(entries) == 0 && anyIgnored {
+		return nil, fmt.Errorf("COPY/ADD source %q matches files in the build context, but all of them are excluded by .dockerignore", pattern)
+	}
+	// A COPY/ADD source that resolves to zero files is always an error: Docker
+	// itself rejects such instructions at build time. This also catches the
+	// case where every matched file was filtered out by --exclude patterns.
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("COPY/ADD source %q matches no files in build context", pattern)
+	}
+	return entries, nil
+}
+
+// globPatternMatches resolves a COPY/ADD source pattern against contextDir and
+// returns (absContext, []absolutePathsThatMatch, error). It performs the
+// pattern-side path-traversal guard, the glob, the literal-path fallback for
+// pattern-less directory copies, and the "no matches at all" error.
+func globPatternMatches(contextDir, pattern string) (string, []string, error) {
+	absContext, err := filepath.Abs(contextDir)
+	if err != nil {
+		return "", nil, err
 	}
 	// Resolve any symlinks in the context directory path itself so that
 	// filepath.EvalSymlinks on resolved target paths can be compared against
@@ -743,21 +770,19 @@ func resolvePattern(contextDir, pattern string, pm, excludePM *patternmatcher.Pa
 		absContext = resolved
 	}
 
-	// Glob relative to context dir.
 	absPattern := filepath.Join(absContext, filepath.FromSlash(pattern))
 
 	// Path traversal guard on the pattern itself (before any filesystem access).
 	// filepath.Join already collapses ".." segments, so this catches escaping paths.
 	patternRel, relErr := filepath.Rel(absContext, absPattern)
 	if relErr != nil || patternRel == ".." || strings.HasPrefix(patternRel, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("COPY/ADD source %q escapes build context", pattern)
+		return "", nil, fmt.Errorf("COPY/ADD source %q escapes build context", pattern)
 	}
 
 	matches, err := filepath.Glob(absPattern)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-
 	// If no glob matches, check if the literal path itself exists (e.g. plain
 	// directory copy without a wildcard).
 	if len(matches) == 0 {
@@ -765,134 +790,133 @@ func resolvePattern(contextDir, pattern string, pm, excludePM *patternmatcher.Pa
 			matches = []string{absPattern}
 		}
 	}
-
 	// If the pattern resolved to no filesystem entries at all, return an error
 	// that names the offending pattern. Docker itself rejects such Dockerfiles
 	// with "no such file or directory" or "no source files were specified".
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("COPY/ADD source %q matches no files in build context", pattern)
+		return "", nil, fmt.Errorf("COPY/ADD source %q matches no files in build context", pattern)
+	}
+	return absContext, matches, nil
+}
+
+// processPatternMatch handles a single absolute path that came out of
+// globPatternMatches. It dispatches by entry type (symlink, directory, regular
+// file, other) and returns the entries it produced plus a flag that is true
+// when at least one file under this match was filtered by .dockerignore.
+//
+// Other entry types (FIFOs, devices) are silently skipped, matching the
+// historical pre-refactor behaviour.
+func processPatternMatch(absContext, abs, pattern string, pm, excludePM *patternmatcher.PatternMatcher) ([]contextEntry, bool, error) {
+	// Path traversal guard: ensure the resolved path stays within the context.
+	absM, err := filepath.Abs(abs)
+	if err != nil {
+		return nil, false, err
+	}
+	rel, err := filepath.Rel(absContext, absM)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, false, fmt.Errorf("COPY/ADD source %q escapes build context", pattern)
 	}
 
-	var entries []contextEntry
-	var anyIgnored bool
-	for _, abs := range matches {
-		// Path traversal guard: ensure the resolved path stays within the context.
-		absM, err := filepath.Abs(abs)
-		if err != nil {
-			return nil, err
-		}
-		rel, err := filepath.Rel(absContext, absM)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, fmt.Errorf("COPY/ADD source %q escapes build context", pattern)
-		}
-
-		info, err := os.Lstat(abs)
-		if err != nil {
-			continue
-		}
-
-		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			// Top-level source is a symlink: follow it and hash whatever it
-			// resolves to using the same downstream paths as the
-			// regular-file and directory branches.
-			resolvedAbs, resolveErr := filepath.EvalSymlinks(abs)
-			if resolveErr != nil {
-				return nil, fmt.Errorf("COPY/ADD source %q: follow symlink: %w", pattern, resolveErr)
-			}
-			resolvedRel, relErr2 := filepath.Rel(absContext, resolvedAbs)
-			if relErr2 != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
-				return nil, fmt.Errorf("COPY/ADD source %q: symlink target escapes build context", pattern)
-			}
-			targetInfo, statErr := os.Stat(resolvedAbs)
-			if statErr != nil {
-				return nil, statErr
-			}
-			if targetInfo.IsDir() {
-				dirEntries, dirIgnored, walkErr := walkDirEntries(absContext, resolvedAbs, pm, excludePM)
-				if walkErr != nil {
-					return nil, walkErr
-				}
-				entries = append(entries, dirEntries...)
-				if dirIgnored {
-					anyIgnored = true
-				}
-			} else if targetInfo.Mode().IsRegular() {
-				ignored, matchErr := isIgnored(pm, resolvedRel)
-				if matchErr != nil {
-					return nil, matchErr
-				}
-				if ignored {
-					anyIgnored = true
-					break
-				}
-				// For a top-level source the --exclude matching path is the
-				// source's own basename, the same convention as the literal
-				// regular-file branch below — the user is filtering against
-				// the name they typed in the Dockerfile, not the resolved
-				// target's name. Use abs (the symlink path), not resolvedAbs.
-				excluded, excMatchErr := isIgnored(excludePM, filepath.Base(abs))
-				if excMatchErr != nil {
-					return nil, excMatchErr
-				}
-				if excluded {
-					break
-				}
-				// The entry is keyed by resolvedRel (the target's path,
-				// e.g. "real.txt"), not by the symlink name ("mylink").
-				// This means a separate COPY real.txt /... in the same
-				// Dockerfile deduplicates correctly via the seen map, and a
-				// symlink to an out-of-tree file would already have errored
-				// above on the escapes-context check.
-				entries = append(entries, contextEntry{relPath: resolvedRel})
-			}
-		case info.IsDir():
-			dirEntries, dirIgnored, walkErr := walkDirEntries(absContext, abs, pm, excludePM)
-			if walkErr != nil {
-				return nil, walkErr
-			}
-			entries = append(entries, dirEntries...)
-			if dirIgnored {
-				anyIgnored = true
-			}
-		case info.Mode().IsRegular():
-			fileRel, relErr2 := filepath.Rel(absContext, abs)
-			if relErr2 != nil {
-				return nil, relErr2
-			}
-			ignored, matchErr := isIgnored(pm, fileRel)
-			if matchErr != nil {
-				return nil, matchErr
-			}
-			if ignored {
-				anyIgnored = true
-				continue
-			}
-			// For a literal file source, the --exclude matching path is the
-			// file's base name (path relative to itself).
-			excluded, excMatchErr := isIgnored(excludePM, filepath.Base(abs))
-			if excMatchErr != nil {
-				return nil, excMatchErr
-			}
-			if excluded {
-				continue
-			}
-			entries = append(entries, contextEntry{relPath: fileRel})
-		}
-		// Other entry types (FIFOs, devices) are silently skipped.
+	info, err := os.Lstat(abs)
+	if err != nil {
+		// Mid-glob race or transient error: skip this entry, mirroring the
+		// pre-refactor `continue`.
+		return nil, false, nil
 	}
 
-	if len(entries) == 0 && anyIgnored {
-		return nil, fmt.Errorf("COPY/ADD source %q matches files in the build context, but all of them are excluded by .dockerignore", pattern)
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		return processSymlinkMatch(absContext, abs, pattern, pm, excludePM)
+	case info.IsDir():
+		dirEntries, dirIgnored, walkErr := walkDirEntries(absContext, abs, pm, excludePM)
+		if walkErr != nil {
+			return nil, false, walkErr
+		}
+		return dirEntries, dirIgnored, nil
+	case info.Mode().IsRegular():
+		return processRegularFileMatch(absContext, abs, pm, excludePM)
 	}
-	// A COPY/ADD source that resolves to zero files is always an error: Docker
-	// itself rejects such instructions at build time. This also catches the
-	// case where every matched file was filtered out by --exclude patterns.
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("COPY/ADD source %q matches no files in build context", pattern)
+	return nil, false, nil
+}
+
+// processSymlinkMatch follows a top-level source symlink and produces entries
+// for whatever it points at, applying the same .dockerignore + --exclude
+// semantics as the regular-file and directory branches.
+func processSymlinkMatch(absContext, abs, pattern string, pm, excludePM *patternmatcher.PatternMatcher) ([]contextEntry, bool, error) {
+	resolvedAbs, resolveErr := filepath.EvalSymlinks(abs)
+	if resolveErr != nil {
+		return nil, false, fmt.Errorf("COPY/ADD source %q: follow symlink: %w", pattern, resolveErr)
+	}
+	resolvedRel, relErr := filepath.Rel(absContext, resolvedAbs)
+	if relErr != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
+		return nil, false, fmt.Errorf("COPY/ADD source %q: symlink target escapes build context", pattern)
+	}
+	targetInfo, statErr := os.Stat(resolvedAbs)
+	if statErr != nil {
+		return nil, false, statErr
+	}
+	if targetInfo.IsDir() {
+		dirEntries, dirIgnored, walkErr := walkDirEntries(absContext, resolvedAbs, pm, excludePM)
+		if walkErr != nil {
+			return nil, false, walkErr
+		}
+		return dirEntries, dirIgnored, nil
+	}
+	if !targetInfo.Mode().IsRegular() {
+		return nil, false, nil
 	}
 
-	return entries, nil
+	ignored, matchErr := isIgnored(pm, resolvedRel)
+	if matchErr != nil {
+		return nil, false, matchErr
+	}
+	if ignored {
+		return nil, true, nil
+	}
+	// For a top-level source the --exclude matching path is the source's
+	// own basename, the same convention as the literal regular-file branch
+	// — the user is filtering against the name they typed in the
+	// Dockerfile, not the resolved target's name. Use abs (the symlink
+	// path), not resolvedAbs.
+	excluded, excMatchErr := isIgnored(excludePM, filepath.Base(abs))
+	if excMatchErr != nil {
+		return nil, false, excMatchErr
+	}
+	if excluded {
+		return nil, false, nil
+	}
+	// The entry is keyed by resolvedRel (the target's path, e.g. "real.txt"),
+	// not by the symlink name ("mylink"). This means a separate COPY real.txt
+	// /... in the same Dockerfile deduplicates correctly via the seen map,
+	// and a symlink to an out-of-tree file would already have errored above
+	// on the escapes-context check.
+	return []contextEntry{{relPath: resolvedRel}}, false, nil
+}
+
+// processRegularFileMatch handles a single literal file source and applies
+// .dockerignore + --exclude semantics.
+func processRegularFileMatch(absContext, abs string, pm, excludePM *patternmatcher.PatternMatcher) ([]contextEntry, bool, error) {
+	fileRel, relErr := filepath.Rel(absContext, abs)
+	if relErr != nil {
+		return nil, false, relErr
+	}
+	ignored, matchErr := isIgnored(pm, fileRel)
+	if matchErr != nil {
+		return nil, false, matchErr
+	}
+	if ignored {
+		return nil, true, nil
+	}
+	// For a literal file source, the --exclude matching path is the file's
+	// base name (path relative to itself).
+	excluded, excMatchErr := isIgnored(excludePM, filepath.Base(abs))
+	if excMatchErr != nil {
+		return nil, false, excMatchErr
+	}
+	if excluded {
+		return nil, false, nil
+	}
+	return []contextEntry{{relPath: fileRel}}, false, nil
 }
 
 // walkDirEntries walks absDir and returns context entries for all regular
@@ -905,81 +929,172 @@ func resolvePattern(contextDir, pattern string, pm, excludePM *patternmatcher.Pa
 // distinguish "all files were dockerignored" from "the source matched
 // nothing on disk", which produce different error messages.
 func walkDirEntries(absContext, absDir string, pm, excludePM *patternmatcher.PatternMatcher) ([]contextEntry, bool, error) {
-	// canPruneIgnoredDirs is constant for the duration of the walk: we can
-	// only skip an entire subtree when no negation patterns exist in the
-	// matcher (e.g. "subdir" + "!subdir/keep.txt" requires descending into
-	// subdir and filtering file-by-file).
-	canPruneIgnoredDirs := pm == nil || !pm.Exclusions()
-	canPruneExcludedDirs := excludePM == nil || !excludePM.Exclusions()
+	w := &dirWalker{
+		absContext: absContext,
+		absDir:     absDir,
+		pm:         pm,
+		excludePM:  excludePM,
+		// canPruneIgnoredDirs is constant for the duration of the walk:
+		// we can only skip an entire subtree when no negation patterns
+		// exist in the matcher (e.g. "subdir" + "!subdir/keep.txt"
+		// requires descending into subdir and filtering file-by-file).
+		canPruneIgnoredDirs:  pm == nil || !pm.Exclusions(),
+		canPruneExcludedDirs: excludePM == nil || !excludePM.Exclusions(),
+	}
+	err := filepath.WalkDir(absDir, w.visit)
+	return w.entries, w.anyIgnored, err
+}
 
-	var entries []contextEntry
-	var anyIgnored bool
-	err := filepath.WalkDir(absDir, func(path string, d fs.DirEntry, err error) error {
+// dirWalker is the in-flight state of a single walkDirEntries call. The
+// visit method is intentionally a closure-equivalent over the receiver so
+// that the per-entry filter and emit logic can decompose into focused
+// methods without each helper having to thread the same five filters back
+// through its signature.
+type dirWalker struct {
+	absContext, absDir   string
+	pm, excludePM        *patternmatcher.PatternMatcher
+	canPruneIgnoredDirs  bool
+	canPruneExcludedDirs bool
+
+	entries    []contextEntry
+	anyIgnored bool
+}
+
+// walkAction is the verdict the per-filter helpers hand back to visit.
+// Returning a tri-state (instead of a (skip bool, prune bool) pair) keeps
+// the call sites in visit branch-free except for the dispatch.
+type walkAction int
+
+const (
+	walkContinue walkAction = iota // not filtered: keep going
+	walkSkipFile                   // filter matched: drop this entry, keep walking the parent
+	walkSkipDir                    // filter matched on a directory we can prune: skip the whole subtree
+)
+
+// visit is the filepath.WalkDirFunc body for dirWalker. It does the
+// path-traversal guard, applies .dockerignore + --exclude filters in turn,
+// and finally collects the entry.
+func (w *dirWalker) visit(path string, d fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	fileRel, err := w.relToContext(path)
+	if err != nil {
+		return err
+	}
+	action, err := w.applyIgnoreFilter(fileRel, d)
+	if err != nil {
+		return err
+	}
+	if ret, stop := walkActionReturn(action); stop {
+		return ret
+	}
+	action, err = w.applyExcludeFilter(path, d)
+	if err != nil {
+		return err
+	}
+	if ret, stop := walkActionReturn(action); stop {
+		return ret
+	}
+	return w.collectEntry(path, fileRel, d)
+}
+
+// walkActionReturn translates a walkAction into the (return-value,
+// short-circuit) pair the visit method needs. The bool exists because
+// "stop processing and continue the walk" is a return-nil case that we
+// can't distinguish from "fall through to the next filter" using only
+// the error value.
+func walkActionReturn(a walkAction) (error, bool) {
+	switch a {
+	case walkSkipDir:
+		return fs.SkipDir, true
+	case walkSkipFile:
+		return nil, true
+	}
+	return nil, false
+}
+
+// relToContext computes the path relative to the build context and
+// guards against escapes outside it.
+func (w *dirWalker) relToContext(path string) (string, error) {
+	fileRel, err := filepath.Rel(w.absContext, path)
+	if err != nil {
+		return "", err
+	}
+	if fileRel == ".." || strings.HasPrefix(fileRel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes build context", path)
+	}
+	return fileRel, nil
+}
+
+// applyIgnoreFilter consults .dockerignore for the current entry and
+// returns the appropriate walkAction. anyIgnored is updated as a side
+// effect — both for ignored directories that get pruned (one increment
+// per pruned subtree) and for ignored regular files / symlinks that get
+// counted individually.
+func (w *dirWalker) applyIgnoreFilter(fileRel string, d fs.DirEntry) (walkAction, error) {
+	ignored, err := isIgnored(w.pm, fileRel)
+	if err != nil {
+		return walkContinue, err
+	}
+	if !ignored {
+		return walkContinue, nil
+	}
+	if d.IsDir() && w.canPruneIgnoredDirs {
+		w.anyIgnored = true
+		return walkSkipDir, nil
+	}
+	// Only count file-like entries toward anyIgnored; ignored directories
+	// that can't be pruned (because of negation patterns) still descend.
+	if d.Type().IsRegular() || d.Type()&fs.ModeSymlink != 0 {
+		w.anyIgnored = true
+	}
+	return walkSkipFile, nil
+}
+
+// applyExcludeFilter consults the per-source --exclude matcher with a
+// path relative to the walked source root (Docker's documented --exclude
+// semantics).
+func (w *dirWalker) applyExcludeFilter(path string, d fs.DirEntry) (walkAction, error) {
+	fileRelToSrc, err := filepath.Rel(w.absDir, path)
+	if err != nil {
+		return walkContinue, err
+	}
+	excluded, err := isIgnored(w.excludePM, fileRelToSrc)
+	if err != nil {
+		return walkContinue, err
+	}
+	if !excluded {
+		return walkContinue, nil
+	}
+	if d.IsDir() && w.canPruneExcludedDirs {
+		return walkSkipDir, nil
+	}
+	return walkSkipFile, nil
+}
+
+// collectEntry appends a contextEntry for the given walked path. Inner
+// symlinks are hashed by target string only (matching Docker's preserved
+// layer behaviour); regular files are hashed by content; directories
+// themselves and other types (FIFOs, devices, …) are silently skipped.
+// Returning an error aborts the walk, matching the pre-refactor behaviour
+// for os.Readlink failures.
+func (w *dirWalker) collectEntry(path, fileRel string, d fs.DirEntry) error {
+	if d.IsDir() {
+		return nil
+	}
+	if d.Type()&fs.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
 		if err != nil {
 			return err
 		}
-		fileRel, relErr := filepath.Rel(absContext, path)
-		if relErr != nil {
-			return relErr
-		}
-		// Traversal guard inside directory walk.
-		if fileRel == ".." || strings.HasPrefix(fileRel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("path %q escapes build context", path)
-		}
-		// Apply .dockerignore filtering.
-		ignored, matchErr := isIgnored(pm, fileRel)
-		if matchErr != nil {
-			return matchErr
-		}
-		if ignored {
-			if d.IsDir() && canPruneIgnoredDirs {
-				anyIgnored = true
-				return fs.SkipDir
-			}
-			// Only count file-like entries we would otherwise have included
-			// toward anyIgnored; ignored directories that can't be pruned
-			// (because of negation patterns) descend further.
-			if d.Type().IsRegular() || d.Type()&fs.ModeSymlink != 0 {
-				anyIgnored = true
-			}
-			return nil
-		}
-		// Apply per-source --exclude filtering using path relative to the
-		// walked source root (Docker's documented --exclude semantics).
-		fileRelToSrc, srcRelErr := filepath.Rel(absDir, path)
-		if srcRelErr != nil {
-			return srcRelErr
-		}
-		excluded, excMatchErr := isIgnored(excludePM, fileRelToSrc)
-		if excMatchErr != nil {
-			return excMatchErr
-		}
-		if excluded {
-			if d.IsDir() && canPruneExcludedDirs {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		// Inner symlinks: hash the target string, not the target content.
-		if d.Type()&fs.ModeSymlink != 0 {
-			target, readErr := os.Readlink(path)
-			if readErr != nil {
-				return readErr
-			}
-			entries = append(entries, contextEntry{relPath: fileRel, symlinkTarget: target, isSymlink: true})
-			return nil
-		}
-		// Regular file.
-		if d.Type().IsRegular() {
-			entries = append(entries, contextEntry{relPath: fileRel})
-		}
-		// Other types (FIFOs, devices) are silently skipped.
+		w.entries = append(w.entries, contextEntry{relPath: fileRel, symlinkTarget: target, isSymlink: true})
 		return nil
-	})
-	return entries, anyIgnored, err
+	}
+	if d.Type().IsRegular() {
+		w.entries = append(w.entries, contextEntry{relPath: fileRel})
+	}
+	return nil
 }
 
 // hashFile hashes a single context file into the outer hasher h.

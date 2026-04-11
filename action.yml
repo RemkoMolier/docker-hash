@@ -78,6 +78,19 @@ inputs:
       `docker/login-action` already populate the default Docker config.
     required: false
     default: ""
+  registries-conf:
+    description: |
+      Path to a Podman-style `registries.conf` TOML file describing per-
+      registry mirrors. When set (and `no-resolve-from` is not "true"),
+      FROM digest resolution is routed through the configured mirrors,
+      with fallback to the upstream registry on connection error or HTTP
+      5xx. The file uses the same `[[registry]]` / `[[registry.mirror]]`
+      schema Podman, Buildah, Skopeo and CRI-O already consume, so an
+      existing `/etc/containers/registries.conf` checked into the runner
+      image (or mounted via `actions/checkout`) can be reused as-is.
+      There is no auto-discovery: the path must be provided explicitly.
+    required: false
+    default: ""
 
 outputs:
   hash:
@@ -109,6 +122,7 @@ runs:
         INPUT_NO_EXPAND_ARGS: ${{ inputs.no-expand-args }}
         INPUT_PLATFORM: ${{ inputs.platform }}
         INPUT_AUTH_FILE: ${{ inputs.auth-file }}
+        INPUT_REGISTRIES_CONF: ${{ inputs.registries-conf }}
       run: |
         set -euo pipefail
         BIN="${RUNNER_TEMP}/docker-hash"
@@ -146,6 +160,9 @@ runs:
         fi
         if [[ -n "$INPUT_AUTH_FILE" ]]; then
           ARGS+=( --auth-file "$INPUT_AUTH_FILE" )
+        fi
+        if [[ -n "$INPUT_REGISTRIES_CONF" ]]; then
+          ARGS+=( --registries-conf "$INPUT_REGISTRIES_CONF" )
         fi
         HASH="$("$BIN" "${ARGS[@]}")"
         # Defensive: the CLI contract is a single 64-char lowercase hex

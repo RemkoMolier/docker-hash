@@ -8,12 +8,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/RemkoMolier/docker-hash/pkg/baseimage"
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
+	"github.com/RemkoMolier/docker-hash/pkg/registrymirrors"
 )
 
 // Build-time variables injected via -ldflags.
@@ -44,6 +46,7 @@ func main() {
 		noExpandArgs   bool
 		platform       string
 		authFile       string
+		registriesConf string
 	)
 
 	flag.StringVar(&dockerfilePath, "file", "Dockerfile", "Path to the Dockerfile")
@@ -79,6 +82,15 @@ func main() {
 			"sources ($HOME/.docker/config.json, $DOCKER_CONFIG, "+
 			"$XDG_RUNTIME_DIR/containers/auth.json) per their normal lookup "+
 			"order. Same semantic as the Skopeo/Podman/Buildah --authfile flag.")
+	flag.StringVar(&registriesConf, "registries-conf", "",
+		"Path to a Podman-style registries.conf TOML file describing per-"+
+			"registry mirrors. When set (and --no-resolve-from is not set), "+
+			"FROM digest resolution is routed through the configured mirrors "+
+			"with fallback to the upstream registry on connection error or "+
+			"HTTP 5xx. The file uses the same [[registry]] / [[registry.mirror]] "+
+			"schema Podman, Buildah, Skopeo and CRI-O already consume, so an "+
+			"existing /etc/containers/registries.conf can be reused as-is. "+
+			"There is no auto-discovery: the path must be provided explicitly.")
 	flag.Parse()
 
 	if showVersion {
@@ -113,11 +125,27 @@ func main() {
 	// (section 4 still emits expanded canonical references, no network),
 	// and with NoExpandArgs=true it uses the v0.1.x-compatible mode that
 	// skips section 4 entirely.
+	//
+	// When --registries-conf is provided we wrap the default HTTP
+	// transport with a mirror-aware RoundTripper from pkg/registrymirrors
+	// and inject it into the RemoteResolver. The mirror layer is
+	// orthogonal to FROM resolution: the canonical upstream image name
+	// is what feeds the hash, regardless of which mirror actually served
+	// the manifest.
 	var resolver baseimage.Resolver
 	if !noResolveFrom {
-		resolver = baseimage.NewCachingResolver(&baseimage.RemoteResolver{
+		remote := &baseimage.RemoteResolver{
 			PlatformOverride: platform,
-		})
+		}
+		if registriesConf != "" {
+			mirrors, err := registrymirrors.Load(registriesConf)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: load %s: %v\n", registriesConf, err)
+				os.Exit(1)
+			}
+			remote.Transport = mirrors.Transport(http.DefaultTransport)
+		}
+		resolver = baseimage.NewCachingResolver(remote)
 	}
 
 	hash, err := hasher.Compute(hasher.Options{

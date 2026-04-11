@@ -1498,9 +1498,9 @@ func TestCompute_CopySource_ExpandsDirectoryPattern(t *testing.T) {
 	// the directory portion of the path expands and the directory walk
 	// picks up files inside it.
 	dir := buildTestContext(t, map[string]string{
-		"Dockerfile":   "FROM alpine:3.20\nARG SRC_DIR=src\nCOPY ${SRC_DIR}/ /app/\n",
-		"src/main.py":  "print('main')\n",
-		"src/util.py":  "def util(): pass\n",
+		"Dockerfile":  "FROM alpine:3.20\nARG SRC_DIR=src\nCOPY ${SRC_DIR}/ /app/\n",
+		"src/main.py": "print('main')\n",
+		"src/util.py": "def util(): pass\n",
 	})
 	opts := hasher.Options{
 		DockerfilePath: filepath.Join(dir, "Dockerfile"),
@@ -1527,7 +1527,7 @@ func TestCompute_CopySource_ExpandsStageLocalArg(t *testing.T) {
 	// A stage-local ARG with a default should expand inside a COPY pattern.
 	// Build the file the ARG names so the resulting pattern matches.
 	dir := buildTestContext(t, map[string]string{
-		"Dockerfile": "FROM alpine:3.20\nARG VERSION=1.0\nCOPY app-${VERSION}.txt /\n",
+		"Dockerfile":  "FROM alpine:3.20\nARG VERSION=1.0\nCOPY app-${VERSION}.txt /\n",
 		"app-1.0.txt": "v1.0\n",
 	})
 	opts := hasher.Options{

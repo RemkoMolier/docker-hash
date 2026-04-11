@@ -3,7 +3,22 @@ linters:
   default: none
   enable:
     - errcheck
+    - gocyclo
     - govet
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    gocyclo:
+      # Cyclomatic-complexity ceiling per function. 15 is the value
+      # most Go style guides settle on as "starts feeling worth a
+      # refactor"; tighten later if the codebase trends simpler.
+      min-complexity: 15
+
+# Formatters run alongside linters in `golangci-lint run`. gofmt enforces
+# the canonical Go source layout so manual alignment drift in map / struct
+# literals is caught in CI rather than left to the next person who runs
+# `gofmt -w` locally.
+formatters:
+  enable:
+    - gofmt
