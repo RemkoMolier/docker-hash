@@ -54,7 +54,11 @@ go build -o docker-hash ./cmd/docker-hash/
 
 ### Basic usage
 
+The `file` and `context` inputs are resolved relative to the workflow's checkout, so the calling job needs an `actions/checkout` step before it invokes the action:
+
 ```yaml
+- uses: actions/checkout@v6
+
 - name: Compute Docker hash
   id: docker_hash
   uses: RemkoMolier/docker-hash@v0.1.0
@@ -74,6 +78,8 @@ go build -o docker-hash ./cmd/docker-hash/
 When you want a later step to consume the hash via a fixed environment variable name (e.g. for templating into a build command), pass `export-env-name`:
 
 ```yaml
+- uses: actions/checkout@v6
+
 - name: Compute Docker hash
   uses: RemkoMolier/docker-hash@v0.1.0
   with:

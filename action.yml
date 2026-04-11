@@ -69,6 +69,16 @@ runs:
           done <<< "$INPUT_BUILD_ARGS"
         fi
         HASH="$("$BIN" "${ARGS[@]}")"
+        # Defensive: the CLI contract is a single 64-char lowercase hex
+        # SHA-256 digest. Reject anything else before writing to
+        # $GITHUB_OUTPUT (and downstream $GITHUB_ENV) so unexpected stdout
+        # — extra lines, log text, an error string — can't corrupt the
+        # output file or inject newlines into a later workflow step.
+        if [[ ! "$HASH" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::docker-hash CLI returned unexpected output (expected a 64-char hex SHA-256 digest):" >&2
+          printf '%s\n' "$HASH" >&2
+          exit 1
+        fi
         echo "hash=$HASH" >> "$GITHUB_OUTPUT"
         echo "docker-hash: $HASH"
 
