@@ -49,6 +49,29 @@ snapshot:
 changelog:
   use: github
   sort: asc
+  # Drop the {SHA}: prefix and ({author email}) suffix that goreleaser's
+  # default github format adds. Squash-merge subjects already include the
+  # PR number (e.g. "build: foo (#16)"), which is the most useful identifier.
+  format: "{{.Message}}"
+  groups:
+    # Regex notes: ^.*? skips any line prefix (SHA, etc.) if goreleaser
+    # applies the regex before `format` strips it. [^)]+ allows scopes
+    # with hyphens, dots, or numbers (e.g. build(docker-hash):), unlike
+    # the more restrictive [[:word:]]+ from goreleaser's docs example.
+    - title: Features
+      regexp: '^.*?feat(\([^)]+\))?!?:'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([^)]+\))?!?:'
+      order: 1
+    - title: Build & infrastructure
+      regexp: '^.*?build(\([^)]+\))?!?:'
+      order: 2
+    - title: Refactor & performance
+      regexp: '^.*?(refactor|perf)(\([^)]+\))?!?:'
+      order: 3
+    - title: Other
+      order: 999
   filters:
     exclude:
       - "^(docs|chore|test|ci|style)(\\(.*\\))?:"
