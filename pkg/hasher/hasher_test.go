@@ -562,3 +562,100 @@ func TestCompute_DockerIgnore_PathTraversalStillErrors(t *testing.T) {
 		t.Error("expected an error for COPY source escaping build context, got nil")
 	}
 }
+
+func TestCompute_DockerIgnore_NegationInsideIgnoredDir(t *testing.T) {
+	// "subdir" ignores the whole directory, but "!subdir/keep.txt" re-includes
+	// one file. The hash must change when keep.txt changes.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":       "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"subdir/skip.txt":  "skip me\n",
+		"subdir/keep.txt":  "keep me\n",
+		".dockerignore":    "subdir\n!subdir/keep.txt\n",
+	})
+
+	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Changing skip.txt (ignored) must NOT change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "subdir/skip.txt"), []byte("changed skip\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skip.txt: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after skip.txt change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("changing an ignored file (subdir/skip.txt) should not change the hash")
+	}
+
+	// Changing keep.txt (re-included via negation) MUST change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "subdir/keep.txt"), []byte("changed keep\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile keep.txt: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after keep.txt change: %v", err)
+	}
+	if h1 == h3 {
+		t.Error("changing a file re-included via !pattern should change the hash")
+	}
+}
+
+func TestCompute_DockerIgnore_CommentOnly(t *testing.T) {
+	// A .dockerignore containing only comments must be treated as a no-op.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"app.py":        "print('hello')\n",
+		".dockerignore": "# just a comment\n\n# another comment\n",
+	})
+
+	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// All files including .dockerignore should be included; modifying app.py must change hash.
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('changed')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after change: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("comment-only .dockerignore: modifying app.py should change the hash")
+	}
+}
+
+func TestCompute_DockerIgnore_DirectoryPattern(t *testing.T) {
+	// "node_modules/" should exclude the entire directory and all nested files.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":                   "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"app.py":                       "print('hello')\n",
+		"node_modules/lodash/index.js": "module.exports = {};\n",
+		"node_modules/lodash/util.js":  "exports.noop = () => {};\n",
+		".dockerignore":                "node_modules/\n",
+	})
+
+	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Modifying a file inside node_modules must NOT change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "node_modules/lodash/index.js"), []byte("// changed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after node_modules change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("modifying a file inside an ignored directory (node_modules/) should not change the hash")
+	}
+}

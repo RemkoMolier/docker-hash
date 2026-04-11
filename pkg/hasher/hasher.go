@@ -3,9 +3,9 @@
 package hasher
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/RemkoMolier/docker-hash/pkg/dockerfile"
 	"github.com/moby/patternmatcher"
+	"github.com/moby/patternmatcher/ignorefile"
 )
 
 // Options holds the inputs for hash computation.
@@ -97,7 +98,7 @@ func writeSection(h hash.Hash, label string) {
 func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]string, error) {
 	pm, err := loadDockerIgnore(contextDir)
 	if err != nil {
-		return nil, fmt.Errorf("load .dockerignore: %w", err)
+		return nil, fmt.Errorf("parse .dockerignore: %w", err)
 	}
 
 	seen := make(map[string]struct{})
@@ -129,7 +130,7 @@ func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]
 // matcher is returned (no-op). Missing file is never an error.
 func loadDockerIgnore(contextDir string) (*patternmatcher.PatternMatcher, error) {
 	f, err := os.Open(filepath.Join(contextDir, ".dockerignore"))
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
@@ -137,16 +138,8 @@ func loadDockerIgnore(contextDir string) (*patternmatcher.PatternMatcher, error)
 	}
 	defer f.Close()
 
-	var patterns []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		patterns = append(patterns, line)
-	}
-	if err := scanner.Err(); err != nil {
+	patterns, err := ignorefile.ReadAll(f)
+	if err != nil {
 		return nil, err
 	}
 	if len(patterns) == 0 {
@@ -246,7 +239,10 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 					return matchErr
 				}
 				if ignored {
-					if d.IsDir() {
+					// Only skip the entire directory when there are no negation
+					// patterns — if negations exist we must descend and filter
+					// file-by-file (e.g. "subdir" + "!subdir/keep.txt").
+					if d.IsDir() && !pm.Exclusions() {
 						return fs.SkipDir
 					}
 					return nil
