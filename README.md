@@ -21,11 +21,20 @@ deterministic CI pipelines.
 
 ## Installation
 
+### Pre-built binaries
+
+Download the latest release for your platform from the
+[GitHub Releases page](https://github.com/RemkoMolier/docker-hash/releases).
+
+Extract the archive and place the `docker-hash` binary somewhere on your `PATH`.
+
+### Go install
+
 ```sh
 go install github.com/RemkoMolier/docker-hash/cmd/docker-hash@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```sh
 git clone https://github.com/RemkoMolier/docker-hash.git
