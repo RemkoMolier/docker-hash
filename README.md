@@ -80,8 +80,8 @@ docker run --rm \
 GHCR packages are **private by default** when first pushed.
 Before unauthenticated pulls (as shown in the GitLab CI and `docker run` examples above) will work, the package must be made public once by the repository owner:
 
-1. Go to **https://github.com/users/RemkoMolier/packages/container/docker-hash/settings** (or navigate via
-   your profile → Packages → `docker-hash` → Package settings).
+1. Go to the [docker-hash package settings](https://github.com/users/RemkoMolier/packages/container/docker-hash/settings) page
+   (or navigate via your profile → Packages → `docker-hash` → Package settings).
 2. Scroll to **Danger Zone** → **Change package visibility** → set to **Public**.
 
 This is a one-time step.
