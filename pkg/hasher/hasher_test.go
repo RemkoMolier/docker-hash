@@ -923,7 +923,7 @@ func TestCompute_CopyExclude_SourceRelativeMatching(t *testing.T) {
 }
 
 func TestCompute_CopyExclude_MultipleExcludes(t *testing.T) {
-	// COPY --exclude=*.log --exclude=*.tmp . /app/ — both patterns are honoured.
+	// COPY --exclude=*.log --exclude=*.tmp . /app/ — both patterns are honored.
 	dir := buildTestContext(t, map[string]string{
 		"Dockerfile": "FROM ubuntu:22.04\nCOPY --exclude=*.log --exclude=*.tmp . /app/\n",
 		"app.py":     "print('hello')\n",
