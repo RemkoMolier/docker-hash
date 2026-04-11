@@ -37,11 +37,27 @@ type Options struct {
 	// target is a registry image (i.e. not "scratch", not a stage reference,
 	// and not already pinned by digest). The resolved "<repo>@sha256:..."
 	// digest string is folded into a dedicated "base-images" section in the
-	// hash output. Pass nil to omit the entire base-images section: the FROM
-	// text then still affects the hash via the raw-Dockerfile section in
-	// section 1, and the resulting digest is bit-for-bit identical to a
-	// v0.1.x hash for the same inputs.
+	// hash output. Pass nil for offline mode: section 4 still runs but no
+	// network calls are made — every FROM contributes its expanded canonical
+	// reference instead of a registry-fetched digest. To get bit-for-bit
+	// v0.1.x compatibility, set both BaseImageResolver=nil AND
+	// NoExpandArgs=true: that combination skips section 4 entirely.
 	BaseImageResolver baseimage.Resolver
+	// NoExpandArgs disables ARG and ENV expansion in COPY/ADD source paths,
+	// COPY/ADD --from stage names and FROM image/platform references. When
+	// set:
+	//
+	//   - COPY/ADD paths are passed through to the filesystem walk verbatim,
+	//     so a literal "${VAR}" pattern that doesn't match anything will
+	//     trigger the "matches no files" error from PR #51.
+	//   - FROM references containing "$" cause Compute to fail with a
+	//     diagnostic, because docker-hash cannot resolve them without
+	//     expansion.
+	//
+	// Combine with BaseImageResolver=nil to reproduce the v0.1.x hash shape
+	// exactly. Use NoExpandArgs alone to enforce a "no implicit expansion"
+	// policy in CI while still resolving FROM digests against the registry.
+	NoExpandArgs bool
 	// Context is the context.Context passed to BaseImageResolver. nil means
 	// context.Background(). Cancellation propagates from this context to all
 	// in-flight registry calls.
@@ -72,6 +88,9 @@ type contextEntry struct {
 //   - for top-level source symlinks: the content of the resolved target
 //   - for symlinks inside a walked directory: the symlink target string only
 //   - the resolved digest of every FROM image, when opts.BaseImageResolver is set
+//
+// The four behaviour modes (controlled by opts.BaseImageResolver and
+// opts.NoExpandArgs) are documented on the Options fields.
 func Compute(opts Options) (string, error) {
 	pr, err := dockerfile.ParseFile(opts.DockerfilePath)
 	if err != nil {
@@ -99,10 +118,20 @@ func Compute(opts Options) (string, error) {
 		_, _ = fmt.Fprintf(h, "%d:%s=%d:%s\n", len(name), name, len(val), val)
 	}
 
-	// 3. Hash the build-context files referenced by COPY/ADD.
+	// 3. Hash the build-context files referenced by COPY/ADD. When ARG/ENV
+	// expansion is enabled (the default), each CopySource's Paths and Stage
+	// are expanded against the running variable state at the COPY position
+	// before the filesystem walk. With NoExpandArgs the literal pattern goes
+	// straight to the walk, and a leftover "${VAR}" will be treated as a
+	// literal pattern (and typically trip the "matches no files" guard).
 	writeSection(h, "context-files")
 
-	contextEntries, err := collectContextFiles(opts.ContextDir, pr.CopySources)
+	sources := pr.CopySources
+	if !opts.NoExpandArgs {
+		sources = expandCopySources(pr.CopySources, opts.BuildArgs, pr.PreFromArgDefaults)
+	}
+
+	contextEntries, err := collectContextFiles(opts.ContextDir, sources)
 	if err != nil {
 		return "", fmt.Errorf("collect context files: %w", err)
 	}
@@ -125,31 +154,50 @@ func Compute(opts Options) (string, error) {
 		}
 	}
 
-	// 4. Hash the FROM base images. Each FROM line in the Dockerfile
-	// contributes one entry, in declaration order, so the hash captures any
-	// drift in the upstream registry. The contribution shape depends on the
-	// kind of FROM after $VAR / ${VAR} expansion against pre-FROM ARG
-	// defaults plus caller-supplied build args:
+	// 4. Hash the FROM base images. Each FROM line contributes one entry,
+	// in declaration order, so the hash captures any drift in the upstream
+	// registry. There are four behaviour modes here, derived from
+	// opts.BaseImageResolver and opts.NoExpandArgs:
 	//
-	//   - "FROM scratch"        → "scratch"
-	//   - "FROM <stage>"        → "stage:<alias>" (no resolution)
-	//   - "FROM <repo>@<sha>"   → "<canonical>@<sha>" (no network call)
-	//   - "FROM <repo>:<tag>"   → "<canonical>@<resolved-sha>" via the
-	//                              resolver
-	//   - "FROM ${VAR}" with no
-	//     value anywhere         → "unexpanded:..." (literal contribution)
+	//   resolver != nil, !NoExpandArgs   → "resolved" mode
+	//     Expand FROM with ARGs, fetch digests via the resolver, emit
+	//     "resolved:<plat>:<canonical>@sha256:..." entries.
 	//
-	// Platform variables that are not resolvable (typically `$BUILDPLATFORM`
-	// or `$TARGETPLATFORM` when the caller did not supply them) drop to "no
-	// platform" so the resolver returns the multi-arch index digest, which
-	// is the deterministic choice across runner architectures.
+	//   resolver == nil, !NoExpandArgs   → "offline" mode
+	//     Expand FROM with ARGs, do NOT call the network, emit
+	//     "offline:<plat>:<canonical>" entries — canonical-but-unresolved.
+	//     This is the right shape for offline runs and for builds where the
+	//     registry is unavailable. Different from v0.1.x by design: the user
+	//     opted out of network access, not out of expansion.
 	//
-	// This entire section is skipped when opts.BaseImageResolver is nil
-	// (the --no-resolve-from path), which makes the resulting hash
-	// bit-for-bit identical to a v0.1.x hash for the same inputs. The FROM
-	// line text is still part of the Dockerfile content hashed in section 1,
-	// so different FROM tags continue to produce different hashes.
-	if opts.BaseImageResolver != nil {
+	//   resolver != nil, NoExpandArgs    → "strict resolved" mode
+	//     Do NOT expand ARGs in FROM. A FROM line containing "$" is rejected
+	//     with a diagnostic. Plain references are resolved via the resolver
+	//     and emitted as "resolved:" entries (same shape as the default
+	//     mode). This enforces "all FROMs must be expansion-free" in CI.
+	//
+	//   resolver == nil, NoExpandArgs    → "v0.1.x compat" mode
+	//     Section 4 is skipped entirely. The FROM text still affects the
+	//     hash via section 1. The resulting digest is bit-for-bit identical
+	//     to a v0.1.x hash for the same inputs.
+	switch {
+	case opts.BaseImageResolver == nil && opts.NoExpandArgs:
+		// v0.1.x compat: skip section 4 entirely.
+	case opts.BaseImageResolver != nil && opts.NoExpandArgs:
+		// Strict resolved: don't expand, fail fast on $.
+		writeSection(h, "base-images")
+		if err := hashBaseImagesStrict(h, pr.FromRefs, opts); err != nil {
+			return "", fmt.Errorf("hash base images: %w", err)
+		}
+	case opts.BaseImageResolver == nil:
+		// Offline: expand, no network.
+		writeSection(h, "base-images")
+		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults)
+		if err := hashBaseImagesOffline(h, pr.FromRefs, pr.StageAliases, lookup); err != nil {
+			return "", fmt.Errorf("hash base images: %w", err)
+		}
+	default:
+		// Resolved: expand, hit registry.
 		writeSection(h, "base-images")
 		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults)
 		if err := hashBaseImages(h, pr.FromRefs, pr.StageAliases, opts, lookup); err != nil {
@@ -162,7 +210,10 @@ func Compute(opts Options) (string, error) {
 
 // buildArgLookup returns a dockerfile.ArgLookup that consults caller-supplied
 // build args first, then pre-FROM ARG defaults from the parsed Dockerfile.
-// Either map may be nil.
+// Either map may be nil. Used for FROM expansion (which is governed by
+// pre-FROM ARGs per the Dockerfile spec); COPY/ADD path expansion uses
+// scopedLookup instead because in-stage ARG/ENV declarations are visible
+// there.
 func buildArgLookup(callerArgs, defaults map[string]string) dockerfile.ArgLookup {
 	return func(name string) (string, bool) {
 		if callerArgs != nil {
@@ -177,6 +228,91 @@ func buildArgLookup(callerArgs, defaults map[string]string) dockerfile.ArgLookup
 		}
 		return "", false
 	}
+}
+
+// expandCopySources returns a copy of sources with each entry's Paths,
+// Stage and Excludes expanded against the running variable state at that
+// COPY/ADD's position in its stage. The Scope on each input source captures
+// the ordered list of in-stage ARG/ENV declarations; evalScope walks them
+// to build the effective lookup.
+//
+// Sources whose Scope is empty (no in-stage decls — e.g. a COPY immediately
+// after the FROM) get a lookup that still honours caller-supplied --build-arg
+// values whose names match a pre-FROM ARG redeclared elsewhere; in practice
+// most COPY paths don't reference variables, so the lookup is rarely
+// consulted.
+func expandCopySources(sources []dockerfile.CopySource, callerArgs, preFromDefaults map[string]string) []dockerfile.CopySource {
+	out := make([]dockerfile.CopySource, len(sources))
+	for i, src := range sources {
+		state := evalScope(src.Scope, callerArgs, preFromDefaults)
+		lookup := func(name string) (string, bool) {
+			v, ok := state[name]
+			return v, ok
+		}
+		ec := dockerfile.CopySource{
+			Stage: dockerfile.ExpandVars(src.Stage, lookup),
+			Paths: make([]string, len(src.Paths)),
+			Scope: src.Scope,
+		}
+		for j, p := range src.Paths {
+			ec.Paths[j] = dockerfile.ExpandVars(p, lookup)
+		}
+		if len(src.Excludes) > 0 {
+			ec.Excludes = make([]string, len(src.Excludes))
+			for j, e := range src.Excludes {
+				ec.Excludes[j] = dockerfile.ExpandVars(e, lookup)
+			}
+		}
+		out[i] = ec
+	}
+	return out
+}
+
+// evalScope replays the ordered list of ARG/ENV declarations visible at a
+// COPY/ADD position and returns the resulting variable state. Precedence
+// follows Dockerfile semantics:
+//
+//   - For an ARG declaration: caller-supplied --build-arg wins; otherwise
+//     the ARG's explicit default; otherwise (when the in-stage form is the
+//     bare "ARG NAME" without a default) the matching pre-FROM ARG default;
+//     otherwise unset.
+//   - For an ENV declaration: the value text is expanded against the running
+//     state (so an ENV can reference an earlier ARG or ENV in the same
+//     stage), and the result overwrites any prior binding for that name.
+//     Caller --build-arg values do NOT override ENVs — ENV is part of the
+//     image, --build-arg only fills ARG.
+//
+// The returned map is intended for one-shot use as a closure capture inside
+// expandCopySources; callers should not mutate it.
+func evalScope(scope []dockerfile.Decl, callerArgs, preFromDefaults map[string]string) map[string]string {
+	state := make(map[string]string, len(scope))
+	for _, d := range scope {
+		switch d.Kind {
+		case dockerfile.DeclARG:
+			if v, ok := callerArgs[d.Name]; ok {
+				state[d.Name] = v
+				continue
+			}
+			if d.HasDefault {
+				state[d.Name] = d.Value
+				continue
+			}
+			if v, ok := preFromDefaults[d.Name]; ok {
+				state[d.Name] = v
+				continue
+			}
+			// Otherwise the ARG is in scope but unset — leave the
+			// state map alone so a `${NAME}` reference stays literal
+			// and triggers the "matches no files" guard downstream.
+		case dockerfile.DeclENV:
+			lookup := func(name string) (string, bool) {
+				v, ok := state[name]
+				return v, ok
+			}
+			state[d.Name] = dockerfile.ExpandVars(d.Value, lookup)
+		}
+	}
+	return state
 }
 
 // hashBaseImages folds every FROM reference in the parsed Dockerfile into h.
@@ -271,6 +407,131 @@ func hashBaseImages(
 				return fmt.Errorf("resolve FROM %q: %w", ref.Image, err)
 			}
 			_, _ = fmt.Fprintf(h, "resolved:%s:%s\n", platformForResolverHash(platForResolver), resolved)
+		}
+	}
+	return nil
+}
+
+// hashBaseImagesOffline folds every FROM reference in the parsed Dockerfile
+// into h WITHOUT making any network calls. Used by the offline mode (no
+// resolver, expansion enabled). Each FromRef is expanded against `lookup`
+// just like in the resolved path; the difference is the contribution shape:
+//
+//   - "FROM <repo>:<tag>"     → "offline:<plat>:<canonical-name>"
+//   - "FROM <repo>@<sha>"     → "offline:<plat>:<canonical-digest>"
+//   - "FROM ${VAR}" with no
+//     value anywhere          → "offline:<plat>:<literal-text>"
+//
+// Stage references and "FROM scratch" use the same shape as resolved mode
+// because their hash contribution does not depend on registry data.
+func hashBaseImagesOffline(
+	h hash.Hash,
+	refs []dockerfile.FromRef,
+	stageAliases map[string]struct{},
+	lookup dockerfile.ArgLookup,
+) error {
+	for i, original := range refs {
+		ref := original.Expand(lookup)
+
+		// Re-evaluate stage detection post-expansion (an ARG can resolve
+		// to a stage alias).
+		if !ref.IsStageRef {
+			if _, isStage := stageAliases[ref.Image]; isStage {
+				ref.IsStageRef = true
+			}
+		}
+
+		_, _ = fmt.Fprintf(h, "from[%d]:", i)
+
+		switch {
+		case ref.IsStageRef:
+			_, _ = fmt.Fprintf(h, "stage:%s\n", ref.Image)
+
+		case baseimage.IsScratch(ref.Image):
+			_, _ = fmt.Fprintf(h, "scratch\n")
+
+		case baseimage.IsAlreadyPinned(ref.Image):
+			canonical, err := baseimage.Canonicalize(ref.Image)
+			if err != nil {
+				return fmt.Errorf("canonicalize FROM %q: %w", ref.Image, err)
+			}
+			_, _ = fmt.Fprintf(h, "offline:%s:%s\n", platformForResolverHash(ref.Platform), canonical)
+
+		case strings.ContainsRune(ref.Image, '$'):
+			// Truly unresolvable: emit the literal text. The full FROM
+			// line is still in section 1, so changes still affect the
+			// hash via that path.
+			_, _ = fmt.Fprintf(h, "offline:%s:%s\n", platformOrDash(ref.Platform), ref.Image)
+
+		default:
+			// Plain registry reference. Canonicalize without network
+			// access so "alpine" and "alpine:latest" hash identically.
+			canonical, err := baseimage.CanonicalName(ref.Image)
+			if err != nil {
+				// Pathological reference text — fall back to literal
+				// rather than fail the hash computation.
+				_, _ = fmt.Fprintf(h, "offline:%s:%s\n", platformForResolverHash(ref.Platform), ref.Image)
+				continue
+			}
+			_, _ = fmt.Fprintf(h, "offline:%s:%s\n", platformForResolverHash(ref.Platform), canonical)
+		}
+	}
+	return nil
+}
+
+// hashBaseImagesStrict folds every FROM reference in the parsed Dockerfile
+// into h WITHOUT performing ARG/ENV expansion. Used by the strict mode
+// (NoExpandArgs=true with a resolver set). Any FROM containing "$" is
+// rejected with a diagnostic so docker-hash never silently ignores a
+// templated reference.
+//
+// Plain references are resolved through the resolver and emitted as
+// "resolved:" entries — the same shape as the default mode — so a hash
+// captured in strict mode is comparable to a default-mode hash for any
+// Dockerfile that does not use ARG expansion in FROM.
+func hashBaseImagesStrict(h hash.Hash, refs []dockerfile.FromRef, opts Options) error {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	for i, ref := range refs {
+		// Reject any unexpanded variable reference up-front. Section 1
+		// already covers the literal text; failing here makes it explicit
+		// that the user must either pin the FROM line or drop the
+		// --no-expand-args flag.
+		if strings.ContainsRune(ref.Image, '$') {
+			return fmt.Errorf("FROM %q contains a variable reference but --no-expand-args was set; pin the FROM line or remove --no-expand-args", ref.Image)
+		}
+		if strings.ContainsRune(ref.Platform, '$') {
+			return fmt.Errorf("FROM --platform %q contains a variable reference but --no-expand-args was set; pin the platform or remove --no-expand-args", ref.Platform)
+		}
+
+		_, _ = fmt.Fprintf(h, "from[%d]:", i)
+
+		switch {
+		case ref.IsStageRef:
+			_, _ = fmt.Fprintf(h, "stage:%s\n", ref.Image)
+
+		case baseimage.IsScratch(ref.Image):
+			_, _ = fmt.Fprintf(h, "scratch\n")
+
+		case baseimage.IsAlreadyPinned(ref.Image):
+			canonical, err := baseimage.Canonicalize(ref.Image)
+			if err != nil {
+				return fmt.Errorf("canonicalize FROM %q: %w", ref.Image, err)
+			}
+			_, _ = fmt.Fprintf(h, "resolved:%s:%s\n", platformForResolverHash(ref.Platform), canonical)
+
+		default:
+			resolved, err := opts.BaseImageResolver.Resolve(ctx, baseimage.Reference{
+				Image:    ref.Image,
+				Platform: ref.Platform,
+			})
+			if err != nil {
+				return fmt.Errorf("resolve FROM %q: %w", ref.Image, err)
+			}
+			_, _ = fmt.Fprintf(h, "resolved:%s:%s\n", platformForResolverHash(ref.Platform), resolved)
 		}
 	}
 	return nil

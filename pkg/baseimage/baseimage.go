@@ -95,6 +95,22 @@ func Canonicalize(image string) (string, error) {
 	return pinned.Name(), nil
 }
 
+// CanonicalName returns the fully-qualified canonical form of an image
+// reference WITHOUT performing any network access. For an unpinned reference
+// like "alpine" it returns "index.docker.io/library/alpine:latest"; for a
+// pinned reference it returns the same thing Canonicalize would. The function
+// is the offline-mode equivalent of asking a Resolver to canonicalize the
+// reference: it folds in the implicit default registry, library namespace and
+// "latest" tag so that "alpine", "alpine:latest" and "library/alpine" all
+// hash to the same canonical text.
+func CanonicalName(image string) (string, error) {
+	ref, err := name.ParseReference(image)
+	if err != nil {
+		return "", fmt.Errorf("baseimage: canonical name %q: %w", image, err)
+	}
+	return ref.Name(), nil
+}
+
 // RemoteResolver is the production Resolver implementation. It uses
 // google/go-containerregistry to fetch image manifests from the upstream
 // registry and returns the canonical "<repo>@<digest>" form.

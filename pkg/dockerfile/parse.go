@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/moby/buildkit/frontend/dockerfile/command"
@@ -22,14 +21,72 @@ type ArgLookup func(name string) (string, bool)
 // CopySource represents a source path from a COPY or ADD instruction.
 type CopySource struct {
 	// Paths is the list of source paths specified in the instruction.
+	// As parsed they may contain $VAR / ${VAR} references; resolve them
+	// using a lookup built from Scope before treating them as filesystem
+	// patterns.
 	Paths []string
 	// Stage is the name of the build stage the source comes from (--from flag),
-	// or empty if the source is from the build context.
+	// or empty if the source is from the build context. As parsed it may
+	// contain $VAR / ${VAR} references too.
 	Stage string
 	// Excludes contains the patterns from --exclude= flags on this instruction,
 	// in source order. Each pattern is matched against paths relative to the
 	// source path (Docker's --exclude semantics).
 	Excludes []string
+	// Scope is the ordered list of ARG and ENV declarations visible at this
+	// COPY/ADD instruction's position in the Dockerfile. Callers that want to
+	// expand variable references in Paths or Stage should walk Scope (in
+	// declaration order) to build the variable lookup, then call ExpandVars.
+	//
+	// Per the Dockerfile spec, ARG visibility is per-stage: pre-FROM ARGs
+	// are NOT automatically visible inside a stage. To use a pre-FROM ARG
+	// inside a stage, the Dockerfile must redeclare it via "ARG NAME"
+	// (without a value) inside the stage. The parser captures both the
+	// stage-local declarations and the inheritance points; consumers
+	// looking up an "ARG NAME" entry without a default should fall back to
+	// ParseResult.PreFromArgDefaults.
+	//
+	// Scope is empty for COPY/ADD instructions that appear before any FROM
+	// (which is invalid per the Dockerfile spec, but the parser does not
+	// reject them).
+	Scope []Decl
+}
+
+// DeclKind identifies whether a Decl is an ARG or an ENV declaration.
+type DeclKind int
+
+const (
+	// DeclARG marks an ARG declaration. The default value lives in
+	// Decl.Value when Decl.HasDefault is true.
+	DeclARG DeclKind = iota
+	// DeclENV marks an ENV declaration. The raw value (which may contain
+	// $VAR references) lives in Decl.Value.
+	DeclENV
+)
+
+// Decl represents a single ARG or ENV declaration as captured by the parser.
+//
+// Decls are stored in declaration order on each CopySource.Scope so that
+// hashers can replay them at hash time, applying caller-supplied build args
+// and ENV expansion against the running variable state.
+type Decl struct {
+	// Kind is DeclARG or DeclENV.
+	Kind DeclKind
+	// Name is the variable name.
+	Name string
+	// Value is the declared default value:
+	//   - For DeclARG with HasDefault == true:  the literal default text
+	//     after the "=" in "ARG NAME=value".
+	//   - For DeclARG with HasDefault == false: empty string.
+	//   - For DeclENV:                          the raw value text, which
+	//     may itself contain $VAR / ${VAR} references that need to be
+	//     expanded against earlier declarations in the same stage.
+	Value string
+	// HasDefault is meaningful for DeclARG only. true means "ARG NAME=value"
+	// (the parser captured an explicit default); false means "ARG NAME"
+	// (no default; the value comes from caller --build-arg or, if the
+	// pre-FROM ARG of the same name has a default, from that inheritance).
+	HasDefault bool
 }
 
 // FromRef represents a single FROM instruction in the Dockerfile.
@@ -88,38 +145,163 @@ func (r FromRef) Expand(lookup ArgLookup) FromRef {
 	}
 }
 
-// argRefRegex matches a single $VAR or ${VAR} reference. Identifier rules
-// follow the Dockerfile spec: ARG names must start with a letter or
-// underscore and contain only letters, digits, and underscores. Anything
-// else (e.g. "$1", "${ FOO}", "$-X") is left literal.
-var argRefRegex = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
-
-// ExpandVars returns s with $VAR and ${VAR} references substituted using
-// lookup. References whose name lookup returns false are left literal.
+// ExpandVars returns s with variable references substituted using lookup.
 //
-// The substitution is single-pass: a value returned by lookup that itself
-// contains $... is NOT re-scanned. This matches the Dockerfile spec, which
-// does not allow recursive ARG expansion in FROM lines.
+// Supported forms (matching the Dockerfile spec for instruction expansion):
 //
-// Only the two basic forms ($VAR and ${VAR}) are supported. Bash extensions
-// like "${VAR:-default}" or "${VAR/foo/bar}" are not supported in Dockerfile
-// FROM lines and ExpandVars treats them as literal.
+//   - $VAR              — bare form, terminated by any non-identifier char
+//   - ${VAR}            — braced form
+//   - ${VAR:-default}   — value of VAR if set and non-empty, else default
+//   - ${VAR:+alt}       — alt if VAR is set and non-empty, else empty
+//
+// Identifier rules: names must start with a letter or underscore and contain
+// only letters, digits, and underscores. Anything else (e.g. "$1", "${ FOO}")
+// is left literal in the result.
+//
+// Modifier arguments (the bit after :- or :+) are recursively expanded
+// against the same lookup, so "${VAR:-${OTHER}}" works. Top-level expansion
+// is single-pass: a value returned by lookup that itself contains $... is
+// NOT re-scanned, matching the Dockerfile spec.
+//
+// References whose name lookup returns false (with no modifier) are left
+// literal in the result so callers can detect and report them.
 func ExpandVars(s string, lookup ArgLookup) string {
 	if lookup == nil || !strings.ContainsRune(s, '$') {
 		return s
 	}
-	return argRefRegex.ReplaceAllStringFunc(s, func(match string) string {
-		var name string
-		if strings.HasPrefix(match, "${") {
-			name = match[2 : len(match)-1]
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] != '$' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		if i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		next := s[i+1]
+		if next == '{' {
+			end := findMatchingBrace(s, i+1)
+			if end < 0 {
+				b.WriteByte(s[i])
+				i++
+				continue
+			}
+			inner := s[i+2 : end]
+			expanded, ok := expandBraced(inner, lookup)
+			if ok {
+				b.WriteString(expanded)
+			} else {
+				b.WriteString(s[i : end+1])
+			}
+			i = end + 1
+		} else if isIdentStart(next) {
+			end := i + 2
+			for end < len(s) && isIdentChar(s[end]) {
+				end++
+			}
+			name := s[i+1 : end]
+			if v, ok := lookup(name); ok {
+				b.WriteString(v)
+			} else {
+				b.WriteString(s[i:end])
+			}
+			i = end
 		} else {
-			name = match[1:]
+			b.WriteByte(s[i])
+			i++
 		}
-		if v, ok := lookup(name); ok {
-			return v
+	}
+	return b.String()
+}
+
+// findMatchingBrace returns the index of the } that matches the { at openIdx,
+// honouring nested braces. Returns -1 if no match.
+func findMatchingBrace(s string, openIdx int) int {
+	depth := 0
+	for i := openIdx; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
 		}
-		return match
-	})
+	}
+	return -1
+}
+
+// expandBraced parses the content of a ${...} reference and returns the
+// expanded value. If the reference is malformed (invalid identifier, etc.) it
+// returns ok=false so the caller can leave the whole match literal. An
+// unknown name with no modifier returns ok=false; an unknown name with a
+// modifier returns the modifier's fallback (default or empty) with ok=true,
+// matching Docker's expansion semantics.
+func expandBraced(inner string, lookup ArgLookup) (string, bool) {
+	var name, modifier, modifierArg string
+	if idx := strings.Index(inner, ":-"); idx >= 0 {
+		name = inner[:idx]
+		modifier = ":-"
+		modifierArg = inner[idx+2:]
+	} else if idx := strings.Index(inner, ":+"); idx >= 0 {
+		name = inner[:idx]
+		modifier = ":+"
+		modifierArg = inner[idx+2:]
+	} else {
+		name = inner
+	}
+
+	if !isValidIdent(name) {
+		return "", false
+	}
+
+	value, ok := lookup(name)
+	valueIsSet := ok && value != ""
+
+	switch modifier {
+	case ":-":
+		if valueIsSet {
+			return value, true
+		}
+		// Recursively expand the default so "${VAR:-${OTHER}}" works.
+		return ExpandVars(modifierArg, lookup), true
+	case ":+":
+		if valueIsSet {
+			// Recursively expand the alternate too.
+			return ExpandVars(modifierArg, lookup), true
+		}
+		return "", true
+	default:
+		if ok {
+			return value, true
+		}
+		return "", false
+	}
+}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isIdentChar(c byte) bool {
+	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isValidIdent(s string) bool {
+	if s == "" || !isIdentStart(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if !isIdentChar(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // ParseResult holds the result of parsing a Dockerfile.
@@ -184,11 +366,24 @@ func Parse(r io.Reader) (*ParseResult, error) {
 
 	seenArgs := make(map[string]struct{})
 	seenFirstFrom := false
+	// currentStageDecls tracks the ordered list of ARG and ENV declarations
+	// that have appeared in the current FROM stage so far. It resets to nil
+	// at every FROM and is snapshot-copied onto each CopySource at the
+	// COPY/ADD position. Pre-FROM ARGs do NOT enter this list — they live
+	// in pr.PreFromArgDefaults and are inherited only via an in-stage
+	// "ARG NAME" redeclaration without a default.
+	var currentStageDecls []Decl
 
 	for _, node := range result.AST.Children {
 		switch strings.ToLower(node.Value) {
 		case command.Copy, command.Add:
 			cs := parseCopyNode(node)
+			// Snapshot the current stage's visible declarations so the
+			// hasher can build a per-CopySource expansion lookup later.
+			if len(currentStageDecls) > 0 {
+				cs.Scope = make([]Decl, len(currentStageDecls))
+				copy(cs.Scope, currentStageDecls)
+			}
 			pr.CopySources = append(pr.CopySources, cs)
 		case command.Arg:
 			if node.Next != nil {
@@ -217,9 +412,62 @@ func Parse(r io.Reader) (*ParseResult, error) {
 						pr.PreFromArgDefaults[name] = value
 					}
 				}
+				// Stage-local ARG declarations are appended to the current
+				// stage's scope. The Dockerfile spec says these are visible
+				// to subsequent instructions (COPY, ADD, RUN, etc.) within
+				// the same stage.
+				if seenFirstFrom {
+					currentStageDecls = append(currentStageDecls, Decl{
+						Kind:       DeclARG,
+						Name:       name,
+						Value:      value,
+						HasDefault: hasDefault,
+					})
+				}
+			}
+		case command.Env:
+			// ENV NAME=value (kv form) and "ENV NAME value" (legacy form)
+			// are both supported. The buildkit AST encodes the chain as
+			// triples: (key, value, separator). The separator is "=" for the
+			// kv form and "" for the legacy form, and is repeated after each
+			// pair when an instruction binds multiple variables, e.g.
+			//   ENV A=1 B=2 → [A, 1, =, B, 2, =]
+			//   ENV LEGACY value → [LEGACY, value, ""]
+			//
+			// We collect every triple. Skipping pre-FROM ENVs matches the
+			// ARG handling: declarations outside any stage cannot be visible
+			// to a COPY/ADD inside a later stage.
+			if !seenFirstFrom {
+				break
+			}
+			for n := node.Next; n != nil; {
+				if n.Next == nil {
+					break // malformed: dangling key with no value/separator
+				}
+				key := n.Value
+				value := n.Next.Value
+				// Advance past key and value; the separator (if present)
+				// is one more node down the chain.
+				next := n.Next.Next
+				if next != nil {
+					next = next.Next
+				}
+				if key != "" {
+					currentStageDecls = append(currentStageDecls, Decl{
+						Kind:  DeclENV,
+						Name:  key,
+						Value: value,
+					})
+				}
+				n = next
 			}
 		case command.From:
 			seenFirstFrom = true
+			// New stage — clear the visible-decls list. The new stage
+			// starts with no inherited ARG/ENV state (per Dockerfile spec
+			// the only inheritance is via in-stage "ARG NAME" redeclaration
+			// of a pre-FROM ARG).
+			currentStageDecls = nil
 			ref := parseFromNode(node, pr.StageAliases)
 			pr.FromRefs = append(pr.FromRefs, ref)
 			// Record this stage alias so any later "FROM <alias>" line is

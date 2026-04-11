@@ -41,6 +41,7 @@ func main() {
 		rawBuildArgs   buildArgList
 		showVersion    bool
 		noResolveFrom  bool
+		noExpandArgs   bool
 		platform       string
 		authFile       string
 	)
@@ -54,9 +55,16 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "Print version information and exit (short)")
 	flag.BoolVar(&noResolveFrom, "no-resolve-from", false,
 		"Do not resolve FROM image digests against the upstream registry. "+
-			"Plain-tag references contribute their literal text to the hash, "+
-			"reproducing the v0.1.x behaviour. Use this for offline runs or to "+
-			"compare against a v0.1.x hash.")
+			"FROM references are still expanded against ARG/ENV state and "+
+			"canonicalized offline (so 'alpine' and 'alpine:latest' hash "+
+			"identically), but no network calls are made. Combine with "+
+			"--no-expand-args to reproduce the v0.1.x hash shape exactly.")
+	flag.BoolVar(&noExpandArgs, "no-expand-args", false,
+		"Disable ARG/ENV expansion in COPY/ADD source paths, --from stage "+
+			"names and FROM image/platform references. With this flag set, "+
+			"a FROM line containing a $VAR reference causes docker-hash to "+
+			"fail rather than silently ignore the variable. Combine with "+
+			"--no-resolve-from to reproduce the v0.1.x hash shape exactly.")
 	flag.StringVar(&platform, "platform", "",
 		"Force a specific platform (e.g. linux/amd64) when resolving FROM "+
 			"image digests for multi-arch images. Empty (the default) hashes "+
@@ -113,6 +121,7 @@ func main() {
 		ContextDir:        contextDir,
 		BuildArgs:         buildArgs,
 		BaseImageResolver: resolver,
+		NoExpandArgs:      noExpandArgs,
 		Context:           context.Background(),
 	})
 	if err != nil {

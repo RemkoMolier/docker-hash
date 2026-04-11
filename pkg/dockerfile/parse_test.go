@@ -357,11 +357,187 @@ func TestExpandVars(t *testing.T) {
 	}
 }
 
+func TestExpandVars_Modifiers(t *testing.T) {
+	values := map[string]string{
+		"SET":   "value",
+		"EMPTY": "",
+		"REPO":  "quay.io",
+	}
+	lookup := func(name string) (string, bool) {
+		v, ok := values[name]
+		return v, ok
+	}
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// :- (default if unset or empty)
+		{"${SET:-fallback}", "value"},
+		{"${EMPTY:-fallback}", "fallback"},
+		{"${MISSING:-fallback}", "fallback"},
+		// :+ (alt if set and non-empty, empty otherwise)
+		{"${SET:+alt}", "alt"},
+		{"${EMPTY:+alt}", ""},
+		{"${MISSING:+alt}", ""},
+		// Default values can themselves be variable references.
+		{"${MISSING:-${REPO}}", "quay.io"},
+		{"${MISSING:-${ALSO_MISSING}}", "${ALSO_MISSING}"},
+		// Nested braces survive findMatchingBrace.
+		{"${MISSING:-prefix-${REPO}-suffix}", "prefix-quay.io-suffix"},
+		// Modifier with empty default.
+		{"${MISSING:-}", ""},
+		{"${EMPTY:-}", ""},
+		// Combined with surrounding text.
+		{"img-${SET:-default}-end", "img-value-end"},
+		{"img-${MISSING:-default}-end", "img-default-end"},
+	}
+	for _, tc := range cases {
+		got := dockerfile.ExpandVars(tc.in, lookup)
+		if got != tc.want {
+			t.Errorf("ExpandVars(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestExpandVars_NilLookup(t *testing.T) {
 	// nil lookup must not panic; the result should be the input unchanged.
 	got := dockerfile.ExpandVars("${BASE}", nil)
 	if got != "${BASE}" {
 		t.Errorf("ExpandVars(${BASE}, nil) = %q, want %q", got, "${BASE}")
+	}
+}
+
+func TestParse_CopySource_Scope_StageLocalArg(t *testing.T) {
+	// A stage-local ARG with a default should appear in CopySources[i].Scope
+	// for any COPY/ADD that follows it in the same stage.
+	const src = `FROM alpine:3.20
+ARG VERSION=1.0
+COPY app-${VERSION}.tar.gz /tmp/
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 1 {
+		t.Fatalf("CopySources length: got %d, want 1", len(pr.CopySources))
+	}
+	scope := pr.CopySources[0].Scope
+	if len(scope) != 1 {
+		t.Fatalf("Scope length: got %d, want 1", len(scope))
+	}
+	d := scope[0]
+	if d.Kind != dockerfile.DeclARG {
+		t.Errorf("Scope[0].Kind: got %v, want DeclARG", d.Kind)
+	}
+	if d.Name != "VERSION" || d.Value != "1.0" || !d.HasDefault {
+		t.Errorf("Scope[0]: got %+v, want {ARG VERSION=1.0 hasDefault=true}", d)
+	}
+}
+
+func TestParse_CopySource_Scope_EnvDeclaration(t *testing.T) {
+	// ENV declarations in the same stage should also appear in Scope, in
+	// declaration order. The deprecated "ENV NAME value" form is treated as
+	// a single binding.
+	const src = `FROM alpine:3.20
+ARG TAG=stable
+ENV PATH_PREFIX=/opt
+ENV LEGACY value
+COPY ${PATH_PREFIX}/${TAG}/ /usr/local/
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 1 {
+		t.Fatalf("CopySources length: got %d", len(pr.CopySources))
+	}
+	scope := pr.CopySources[0].Scope
+	if len(scope) != 3 {
+		t.Fatalf("Scope length: got %d, want 3 (ARG TAG, ENV PATH_PREFIX, ENV LEGACY); scope=%+v", len(scope), scope)
+	}
+	// Order matters.
+	if scope[0].Kind != dockerfile.DeclARG || scope[0].Name != "TAG" {
+		t.Errorf("Scope[0]: got %+v, want ARG TAG", scope[0])
+	}
+	if scope[1].Kind != dockerfile.DeclENV || scope[1].Name != "PATH_PREFIX" || scope[1].Value != "/opt" {
+		t.Errorf("Scope[1]: got %+v, want ENV PATH_PREFIX=/opt", scope[1])
+	}
+	if scope[2].Kind != dockerfile.DeclENV || scope[2].Name != "LEGACY" || scope[2].Value != "value" {
+		t.Errorf("Scope[2]: got %+v, want ENV LEGACY=value", scope[2])
+	}
+}
+
+func TestParse_CopySource_Scope_EnvMultiBinding(t *testing.T) {
+	// A single ENV instruction can declare multiple variables; all of them
+	// must appear in Scope, in declaration order.
+	const src = `FROM alpine:3.20
+ENV A=1 B=2 C=3
+COPY x /
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 1 {
+		t.Fatalf("CopySources length: got %d, want 1", len(pr.CopySources))
+	}
+	scope := pr.CopySources[0].Scope
+	if len(scope) != 3 {
+		t.Fatalf("Scope length: got %d, want 3 (one per ENV binding); scope=%+v", len(scope), scope)
+	}
+	want := []struct{ name, value string }{{"A", "1"}, {"B", "2"}, {"C", "3"}}
+	for i, w := range want {
+		if scope[i].Kind != dockerfile.DeclENV || scope[i].Name != w.name || scope[i].Value != w.value {
+			t.Errorf("Scope[%d]: got %+v, want ENV %s=%s", i, scope[i], w.name, w.value)
+		}
+	}
+}
+
+func TestParse_CopySource_Scope_ResetsAtFrom(t *testing.T) {
+	// Stage-local declarations must NOT leak into the next FROM stage.
+	const src = `FROM alpine:3.20 AS first
+ARG STAGE1=one
+COPY a.txt /
+
+FROM alpine:3.20 AS second
+COPY b.txt /
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 2 {
+		t.Fatalf("CopySources length: got %d, want 2", len(pr.CopySources))
+	}
+	if len(pr.CopySources[0].Scope) != 1 {
+		t.Errorf("CopySources[0].Scope: got len=%d, want 1", len(pr.CopySources[0].Scope))
+	}
+	if len(pr.CopySources[1].Scope) != 0 {
+		t.Errorf("CopySources[1].Scope should be empty after FROM reset; got %+v", pr.CopySources[1].Scope)
+	}
+}
+
+func TestParse_CopySource_Scope_PreFromArgsExcluded(t *testing.T) {
+	// ARGs declared BEFORE any FROM are pre-FROM ARGs, not stage-local —
+	// they must NOT appear in CopySource.Scope (they live in
+	// PreFromArgDefaults instead, and are only inherited via in-stage
+	// "ARG NAME" redeclaration).
+	const src = `ARG BASE=alpine:3.20
+FROM ${BASE}
+COPY app /
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 1 {
+		t.Fatalf("CopySources length: got %d, want 1", len(pr.CopySources))
+	}
+	if len(pr.CopySources[0].Scope) != 0 {
+		t.Errorf("CopySources[0].Scope should be empty (BASE is pre-FROM); got %+v", pr.CopySources[0].Scope)
+	}
+	if pr.PreFromArgDefaults["BASE"] != "alpine:3.20" {
+		t.Errorf("PreFromArgDefaults[BASE]: got %q, want alpine:3.20", pr.PreFromArgDefaults["BASE"])
 	}
 }
 

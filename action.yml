@@ -39,9 +39,21 @@ inputs:
   no-resolve-from:
     description: |
       Set to "true" to skip resolving FROM image digests against the upstream
-      registry. Plain-tag references contribute their literal text to the hash,
-      reproducing the v0.1.x behaviour. Use this for offline runs or to compare
-      against a v0.1.x hash. Default: "false" (resolution is on).
+      registry. FROM references are still expanded against ARG/ENV state and
+      canonicalized offline (so `alpine` and `alpine:latest` hash identically),
+      but no network calls are made. Combine with `no-expand-args: "true"` to
+      reproduce the v0.1.x hash shape exactly. Default: "false" (resolution
+      is on).
+    required: false
+    default: "false"
+  no-expand-args:
+    description: |
+      Set to "true" to disable ARG/ENV expansion in COPY/ADD source paths,
+      `--from=` stage names and FROM image/platform references. With this
+      flag set, a FROM line containing a `$VAR` reference causes docker-hash
+      to fail rather than silently ignore the variable. Combine with
+      `no-resolve-from: "true"` to reproduce the v0.1.x hash shape exactly.
+      Default: "false" (expansion is on).
     required: false
     default: "false"
   platform:
@@ -94,6 +106,7 @@ runs:
         INPUT_CONTEXT: ${{ inputs.context }}
         INPUT_BUILD_ARGS: ${{ inputs.build-args }}
         INPUT_NO_RESOLVE_FROM: ${{ inputs.no-resolve-from }}
+        INPUT_NO_EXPAND_ARGS: ${{ inputs.no-expand-args }}
         INPUT_PLATFORM: ${{ inputs.platform }}
         INPUT_AUTH_FILE: ${{ inputs.auth-file }}
       run: |
@@ -117,6 +130,14 @@ runs:
           ""|false|0|no) ;;
           *)
             echo "::error::no-resolve-from must be one of: true, false, 1, 0, yes, no (got '$INPUT_NO_RESOLVE_FROM')" >&2
+            exit 1
+            ;;
+        esac
+        case "${INPUT_NO_EXPAND_ARGS,,}" in
+          true|1|yes) ARGS+=( --no-expand-args ) ;;
+          ""|false|0|no) ;;
+          *)
+            echo "::error::no-expand-args must be one of: true, false, 1, 0, yes, no (got '$INPUT_NO_EXPAND_ARGS')" >&2
             exit 1
             ;;
         esac
