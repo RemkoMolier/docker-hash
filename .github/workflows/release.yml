@@ -3,7 +3,12 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Match immutable semver release tags (vX.Y.Z, vX.Y.Z-rc1, …) only.
+      # The floating action refs (vX, vX.Y) maintained by the
+      # "Update floating action tags" step below must not re-trigger this
+      # workflow, so this filter deliberately excludes tags with fewer than
+      # two dots.
+      - 'v*.*.*'
 
 permissions:
   contents: write
@@ -44,3 +49,31 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update floating action tags
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Floating major/minor git tags (vX, vX.Y) are the action-side
+          # equivalent of the docker_manifests floating image tags in
+          # .goreleaser.yaml. They let consumers pin
+          # `uses: RemkoMolier/docker-hash@v0` (or @v0.1) and get patch/minor
+          # updates automatically. Skip pre-releases so hyphenated tags
+          # like v0.2.0-rc1 never promote to the floating refs, matching
+          # the skip_push policy for docker_manifests.
+          if [[ "$TAG" == *-* ]]; then
+            echo "::notice::tag '$TAG' is a pre-release, skipping floating action tag update"
+            exit 0
+          fi
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+            echo "::notice::tag '$TAG' is not a simple semver vX.Y.Z, skipping floating action tag update"
+            exit 0
+          fi
+          MAJOR="v${BASH_REMATCH[1]}"
+          MINOR="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          echo "Updating floating action tags: $MAJOR, $MINOR -> $SHA (from $TAG)"
+          git tag -f "$MAJOR" "$SHA"
+          git tag -f "$MINOR" "$SHA"
+          git push --force origin "refs/tags/$MAJOR" "refs/tags/$MINOR"
