@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/moby/buildkit v0.18.0
-	github.com/moby/patternmatcher v0.6.0
+	github.com/moby/patternmatcher v0.6.1
 )
 
 require (
