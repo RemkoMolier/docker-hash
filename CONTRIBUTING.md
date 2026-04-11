@@ -31,13 +31,16 @@ Use the package or component name in lowercase.
 
 ### Breaking changes
 
-Append `!` to the type/scope, or add a `BREAKING CHANGE:` footer:
+The CI check validates the **PR title only**, so the supported way to mark a
+breaking change is the `!` suffix on the type or scope:
 
 ```
 feat(hasher)!: change hash algorithm to SHA-512
 ```
 
-or
+Optionally, you may also document the break with a `BREAKING CHANGE:` footer in
+the **PR description body** (which becomes the squash-commit body on merge).
+The footer is not enforced by CI, but it's picked up by changelog tooling:
 
 ```
 refactor: rename Options.ContextDir to Options.BuildContext

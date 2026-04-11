@@ -1,5 +1,14 @@
 name: Semantic PR title
 
+# SECURITY: This workflow uses `pull_request_target` so it runs in the base-repo
+# context with the permissions below, which is required for the action to read
+# PR titles from fork PRs. This is only safe because the job NEVER checks out or
+# executes PR-controlled code — it only reads the PR title via the GitHub API.
+#
+# DO NOT add an `actions/checkout` step or any step that runs code from the PR
+# head. Doing so would turn this workflow into a remote-code-execution vector
+# for any attacker who can open a PR. If future work needs PR file contents,
+# switch the trigger to `pull_request` first.
 on:
   pull_request_target:
     types:
