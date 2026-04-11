@@ -101,3 +101,9 @@ The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
 ├── pkg/dockerfile/    # Dockerfile parser helpers
 └── pkg/hasher/        # Core hash computation
 ```
+
+---
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 Remko Molier.
