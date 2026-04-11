@@ -141,3 +141,19 @@ When adding a new action to a workflow, resolve the tag to a SHA up front rather
 ### Triggering Renovate manually
 
 Tick the "Check this box to trigger a request for Renovate to run again on this repository" checkbox in the [Dependency Dashboard issue](../../issues/21) if you want Renovate to re-scan immediately rather than waiting for its next scheduled run.
+
+## Releases and the security label
+
+`docker-hash` follows a weekly release cadence with a security fast track.
+The full policy lives in [RELEASING.md](RELEASING.md); the contributor-relevant summary is short:
+
+- Releases are cut on **Tuesdays at 10:00 UTC** when there are releasable changes since the latest tag.
+- A scheduled `release-cadence` workflow opens or updates a tracking issue (labelled `release-prep`) when a release is due.
+- The maintainer reviews the issue and pushes the tag manually — there is no unattended auto-tagging.
+
+If your PR fixes a security-sensitive issue (CVE-driven dependency bump, auth fix, anything materially affecting the project's security posture), **call it out clearly in the PR description or a follow-up comment**.
+External contributors usually can't apply labels to GitHub issues and PRs themselves; a maintainer will add the `security` label on your behalf before merge.
+Once the label is in place, the cadence workflow picks the PR up across the unreleased commit range and surfaces it as URGENT in the next release-prep issue, so security fixes do not have to wait for the next weekly slot.
+
+You generally do not need to do anything else.
+The maintainer handles tag pushes and the release workflow takes care of the artifacts.

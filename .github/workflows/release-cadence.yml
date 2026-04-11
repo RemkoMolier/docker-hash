@@ -1,0 +1,442 @@
+name: Release cadence
+
+# Weekly check for unreleased changes since the latest v* tag.
+#
+# Three independent triggers can prepare a release:
+#
+#   1. Releasable Conventional Commit types (feat/fix/perf/refactor/build/
+#      ci/revert) appear in the commit range since the latest tag.
+#   2. Any merged PR in that range carries the `security` label, even if
+#      its commit type is otherwise non-releasable (e.g. `chore(deps):` for
+#      a security-driven dependency bump).
+#   3. A manual workflow_dispatch run with `reason: security`.
+#
+# When at least one trigger fires, the workflow opens or updates a single
+# tracking issue (titled "release: prepare next release", labelled
+# "release-prep") summarising the commit range and the recommended next
+# version. When none fire, the workflow no-ops silently.
+#
+# See RELEASING.md for the full policy.
+
+on:
+  schedule:
+    # Tuesday at 10:00 UTC. Avoids Monday churn and Friday-afternoon
+    # crunch; lands during European morning / US East Coast pre-noon.
+    - cron: "0 10 * * 2"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: |
+          Optional reason for a manual run. Use 'security' to mark the
+          tracking issue as URGENT — security; any other free-form text
+          is just logged for the maintainer's audit trail.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+  # Required for `gh pr view --json labels,title` in the security
+  # detection step. Read-only — the workflow never edits PRs.
+  pull-requests: read
+
+concurrency:
+  group: release-cadence
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release recommendation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Need full history + tags to compare main against the latest
+          # v* tag and walk the commit list.
+          fetch-depth: 0
+
+      - name: List commits since latest tag and apply releasable filter
+        id: status
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+
+          echo "manual reason: ${REASON:-<none>}"
+
+          # The newest v*-prefixed tag, sorted by semver.
+          LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [[ -z "$LATEST_TAG" ]]; then
+            # No tags yet — every commit on main is "since the latest tag".
+            COMMIT_RANGE="HEAD"
+            LATEST_TAG_DISPLAY="(none — no v* tag yet)"
+          else
+            COMMIT_RANGE="${LATEST_TAG}..HEAD"
+            LATEST_TAG_DISPLAY="$LATEST_TAG"
+          fi
+
+          # All commits in the range, one per line: "<sha> <subject>".
+          # %h = abbreviated SHA (default 7 chars), %s = subject.
+          ALL_COMMITS="$(git log --pretty=format:'%h %s' "$COMMIT_RANGE" || true)"
+
+          if [[ -z "$ALL_COMMITS" ]]; then
+            # No commits at all — even reason=security has nothing to act on.
+            # Stash the minimum needed for the summary step and exit.
+            echo "No commits since $LATEST_TAG_DISPLAY — nothing to do."
+            {
+              echo "latest_tag=$LATEST_TAG"
+              echo "latest_tag_display=$LATEST_TAG_DISPLAY"
+              echo "commit_range=$COMMIT_RANGE"
+              echo "has_commits=false"
+              echo "has_releasable=false"
+              echo "bump=patch"
+              echo "suggested_version="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Filter to releasable types per RELEASING.md. The regex matches
+          # the Conventional Commit prefix (with or without scope, with or
+          # without a `!` breaking marker) on each line.
+          RELEASABLE_TYPES_RE='^[a-f0-9]+ (feat|fix|perf|refactor|build|ci|revert)(\([^)]+\))?!?:'
+          RELEASABLE="$(echo "$ALL_COMMITS" | grep -E "$RELEASABLE_TYPES_RE" || true)"
+
+          if [[ -n "$RELEASABLE" ]]; then
+            HAS_RELEASABLE="true"
+            echo "Releasable commits since $LATEST_TAG_DISPLAY:"
+            echo "$RELEASABLE"
+          else
+            HAS_RELEASABLE="false"
+            echo "No commits matched the normal releasable type filter (feat/fix/perf/refactor/build/ci/revert)."
+            echo "Security override (label or manual reason) may still trigger a release prep — see the next step."
+            echo "Commits in range:"
+            echo "$ALL_COMMITS"
+          fi
+
+          # Recommended next version per RELEASING.md:
+          # - any `!` marker  → major
+          # - any `feat`      → minor
+          # - otherwise       → patch
+          #
+          # Computed against the releasable subset; defaults to patch when
+          # the only reason for prep is the security override.
+          BUMP="patch"
+          if [[ -n "$RELEASABLE" ]]; then
+            if echo "$RELEASABLE" | grep -qE '^[a-f0-9]+ [a-z]+(\([^)]+\))?!:'; then
+              BUMP="major"
+            elif echo "$RELEASABLE" | grep -qE '^[a-f0-9]+ feat(\([^)]+\))?:'; then
+              BUMP="minor"
+            fi
+          fi
+
+          # Compute the suggested next version. Only attempts a numeric
+          # bump if the latest tag matches vMAJOR.MINOR.PATCH; otherwise
+          # leaves the suggestion blank and the maintainer picks manually.
+          SUGGESTED=""
+          if [[ "$LATEST_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            case "$BUMP" in
+              major) SUGGESTED="v$((MAJOR + 1)).0.0" ;;
+              minor) SUGGESTED="v${MAJOR}.$((MINOR + 1)).0" ;;
+              patch) SUGGESTED="v${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+            esac
+          fi
+
+          # Stash all the outputs together. Use heredoc delimiters for
+          # the multiline values so embedded newlines round-trip safely.
+          {
+            echo "latest_tag=$LATEST_TAG"
+            echo "latest_tag_display=$LATEST_TAG_DISPLAY"
+            echo "commit_range=$COMMIT_RANGE"
+            echo "has_commits=true"
+            echo "has_releasable=$HAS_RELEASABLE"
+            echo "bump=$BUMP"
+            echo "suggested_version=$SUGGESTED"
+            echo 'releasable_commits<<EOF_RELEASABLE'
+            echo "$RELEASABLE"
+            echo 'EOF_RELEASABLE'
+            echo 'all_commits<<EOF_ALL'
+            echo "$ALL_COMMITS"
+            echo 'EOF_ALL'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Detect security-flagged PRs in the range
+        id: security
+        # Runs whenever there are commits in the range, even if none are
+        # releasable by the normal type filter. That's the whole point of
+        # this step: a security-labelled `chore(deps):` (or any other
+        # non-releasable type) must still be able to trigger release prep.
+        if: steps.status.outputs.has_commits == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_RANGE: ${{ steps.status.outputs.commit_range }}
+        run: |
+          set -euo pipefail
+
+          # Find PR numbers from squash-merge commit subjects (the "(#NN)"
+          # suffix that GitHub appends at the end of every squash-merge
+          # subject) and check each PR for the `security` label. PRs
+          # without that suffix (e.g. direct commits to main, or merges
+          # of branches whose subject doesn't end in `(#NN)`) are skipped
+          # because they can't reliably be looked up.
+          #
+          # The `\)$` anchor avoids false positives for PR refs that
+          # appear mid-subject (e.g. "fix: revert change from (#42)").
+          PR_NUMBERS="$(git log --pretty=format:'%s' "$COMMIT_RANGE" \
+            | grep -oE '\(#[0-9]+\)$' \
+            | tr -d '(#)' \
+            | sort -u || true)"
+
+          if [[ -z "$PR_NUMBERS" ]]; then
+            echo "No squash-merged PRs detected in $COMMIT_RANGE — nothing to label-check."
+            {
+              echo "has_security=false"
+              echo "security_prs="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Checking labels on PR(s): $PR_NUMBERS"
+
+          # NB: no `2>/dev/null || true` masking. If `gh pr view` fails
+          # for an unexpected reason — auth, rate limit, deleted PR — let
+          # the step fail loud so the maintainer notices instead of
+          # silently acting like there were no security PRs.
+          SECURITY_PRS=""
+          for pr in $PR_NUMBERS; do
+            META="$(gh pr view "$pr" --json labels,title)"
+            HAS_LABEL="$(echo "$META" | jq -r '[.labels[].name] | index("security") // empty')"
+            if [[ -n "$HAS_LABEL" ]]; then
+              TITLE="$(echo "$META" | jq -r '.title')"
+              SECURITY_PRS+="- #${pr} — ${TITLE}"$'\n'
+            fi
+          done
+
+          if [[ -n "$SECURITY_PRS" ]]; then
+            echo "Found security-labelled PR(s) in range:"
+            echo "$SECURITY_PRS"
+            {
+              echo "has_security=true"
+              echo 'security_prs<<EOF_SEC'
+              echo "$SECURITY_PRS"
+              echo 'EOF_SEC'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "No PRs in range carry the security label."
+            {
+              echo "has_security=false"
+              echo "security_prs="
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Decide whether to prepare a release
+        id: decide
+        # Always run when status produced output, so the no-commits and
+        # nothing-releasable-and-no-security paths can both be summarised.
+        if: always() && steps.status.outcome == 'success'
+        env:
+          HAS_COMMITS: ${{ steps.status.outputs.has_commits }}
+          HAS_RELEASABLE: ${{ steps.status.outputs.has_releasable }}
+          HAS_SECURITY: ${{ steps.security.outputs.has_security }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+
+          # No commits at all → no-op, even if reason=security. The
+          # security override is meant to fast-track an *existing* PR's
+          # commit, not to manufacture a release out of thin air.
+          if [[ "$HAS_COMMITS" != "true" ]]; then
+            echo "No commits in range — release prep not needed."
+            {
+              echo "should_prepare=false"
+              echo "trigger=none"
+              echo "urgent=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Three independent triggers, in priority order. The first to
+          # match wins; the others are still surfaced in the issue body.
+          if [[ "$HAS_RELEASABLE" == "true" ]]; then
+            TRIGGER="releasable"
+          elif [[ "$HAS_SECURITY" == "true" ]]; then
+            TRIGGER="security_label"
+          elif [[ "$REASON" == "security" ]]; then
+            TRIGGER="manual_security"
+          else
+            TRIGGER="none"
+          fi
+
+          if [[ "$TRIGGER" == "none" ]]; then
+            echo "No releasable commits, no security label, no manual security override — no-op week."
+            {
+              echo "should_prepare=false"
+              echo "trigger=none"
+              echo "urgent=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # urgent = anything that's *not* a normal releasable run
+          URGENT="false"
+          if [[ "$TRIGGER" == "security_label" || "$TRIGGER" == "manual_security" ]]; then
+            URGENT="true"
+          fi
+
+          echo "Release prep trigger: $TRIGGER (urgent=$URGENT)"
+          {
+            echo "should_prepare=true"
+            echo "trigger=$TRIGGER"
+            echo "urgent=$URGENT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the release-prep tracking issue
+        if: steps.decide.outputs.should_prepare == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST_TAG_DISPLAY: ${{ steps.status.outputs.latest_tag_display }}
+          COMMIT_RANGE: ${{ steps.status.outputs.commit_range }}
+          BUMP: ${{ steps.status.outputs.bump }}
+          SUGGESTED_VERSION: ${{ steps.status.outputs.suggested_version }}
+          HAS_RELEASABLE: ${{ steps.status.outputs.has_releasable }}
+          RELEASABLE_COMMITS: ${{ steps.status.outputs.releasable_commits }}
+          ALL_COMMITS: ${{ steps.status.outputs.all_commits }}
+          URGENT: ${{ steps.decide.outputs.urgent }}
+          TRIGGER: ${{ steps.decide.outputs.trigger }}
+          SECURITY_PRS: ${{ steps.security.outputs.security_prs }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+
+          ISSUE_TITLE="release: prepare next release"
+          ISSUE_LABEL="release-prep"
+
+          # Build the body in /tmp so the heredoc body never has to live
+          # inside `gh issue edit/create --body`, where shell quoting gets
+          # painful with embedded backticks and code fences.
+          {
+            if [[ "$URGENT" == "true" ]]; then
+              echo "# 🚨 URGENT — security release recommended"
+              echo
+              if [[ -n "$SECURITY_PRS" ]]; then
+                echo "The following merged PRs are labelled \`security\` and have not yet shipped:"
+                echo
+                echo "$SECURITY_PRS"
+              fi
+              if [[ "$TRIGGER" == "manual_security" ]]; then
+                echo "_This run was triggered manually with \`reason=security\`._"
+                echo
+              fi
+              if [[ "$HAS_RELEASABLE" != "true" ]]; then
+                echo "_No commits in range matched the normal releasable type filter._"
+                echo "_The release prep is firing because of the security override above._"
+                echo
+              fi
+              echo "---"
+              echo
+            fi
+
+            echo "## Release prep — generated $(date -u +%Y-%m-%d) by \`release-cadence\`"
+            echo
+            echo "**Latest released tag:** ${LATEST_TAG_DISPLAY}"
+            echo "**Commit range waiting to ship:** \`${COMMIT_RANGE}\`"
+            echo "**Trigger:** ${TRIGGER}"
+            echo "**Recommended bump:** ${BUMP}"
+            if [[ -n "$SUGGESTED_VERSION" ]]; then
+              echo "**Suggested next version:** \`${SUGGESTED_VERSION}\`"
+            else
+              echo "**Suggested next version:** _no automatic suggestion — the latest tag does not match \`vMAJOR.MINOR.PATCH\`, so the maintainer should pick the next version manually._"
+            fi
+            echo
+
+            if [[ "$HAS_RELEASABLE" == "true" ]]; then
+              echo "## Releasable commits"
+              echo
+              echo '```text'
+              echo "$RELEASABLE_COMMITS"
+              echo '```'
+              echo
+            else
+              echo "## Releasable commits"
+              echo
+              echo "_None._"
+              echo "_All commits in range have non-releasable types (docs/test/style/chore); the security override is the reason this issue was opened._"
+              echo
+            fi
+
+            echo "## All commits in range (for context)"
+            echo
+            echo '<details>'
+            echo "<summary>Click to expand</summary>"
+            echo
+            echo '```text'
+            echo "$ALL_COMMITS"
+            echo '```'
+            echo '</details>'
+            echo
+            echo "## Maintainer checklist"
+            echo
+            echo "- [ ] CI on the tip of \`main\` is green"
+            echo "- [ ] Release notes drafted (or accept goreleaser's auto-generated notes)"
+            echo "- [ ] Security-flagged commits (if any) reviewed for blast radius"
+            echo "- [ ] \`git tag -a <version> -m \"docker-hash <version>\" && git push origin <version>\`"
+            echo "- [ ] Release workflow finished and the GitHub Release page looks correct"
+            echo "- [ ] This tracking issue closed once the release is published"
+            echo
+            echo "See [RELEASING.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/RELEASING.md) for the full policy."
+          } > /tmp/issue-body.md
+
+          # Look for an existing open release-prep issue and update it,
+          # or create a new one. We match by label so the title can drift
+          # across runs without breaking the lookup.
+          EXISTING="$(gh issue list --state open --label "$ISSUE_LABEL" --json number --jq '.[0].number // empty')"
+
+          if [[ -n "$EXISTING" ]]; then
+            echo "Updating existing release-prep issue #$EXISTING"
+            gh issue edit "$EXISTING" \
+              --title "$ISSUE_TITLE" \
+              --body-file /tmp/issue-body.md
+            echo "Issue: https://github.com/${GITHUB_REPOSITORY}/issues/${EXISTING}"
+          else
+            echo "Opening new release-prep tracking issue"
+            # Create the label if it doesn't exist yet (idempotent).
+            gh label create "$ISSUE_LABEL" \
+              --description "Maintained by the release-cadence workflow" \
+              --color "0E8A16" \
+              --force >/dev/null 2>&1 || true
+            CREATED_URL="$(gh issue create \
+              --title "$ISSUE_TITLE" \
+              --body-file /tmp/issue-body.md \
+              --label "$ISSUE_LABEL")"
+            echo "Issue: $CREATED_URL"
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          HAS_COMMITS: ${{ steps.status.outputs.has_commits }}
+          HAS_RELEASABLE: ${{ steps.status.outputs.has_releasable }}
+          HAS_SECURITY: ${{ steps.security.outputs.has_security }}
+          SHOULD_PREPARE: ${{ steps.decide.outputs.should_prepare }}
+          TRIGGER: ${{ steps.decide.outputs.trigger }}
+          LATEST_TAG_DISPLAY: ${{ steps.status.outputs.latest_tag_display }}
+          BUMP: ${{ steps.status.outputs.bump }}
+          SUGGESTED_VERSION: ${{ steps.status.outputs.suggested_version }}
+        run: |
+          {
+            echo "## Release cadence run"
+            echo
+            echo "- **Latest tag:** ${LATEST_TAG_DISPLAY:-(unknown)}"
+            echo "- **Commits in range:** ${HAS_COMMITS:-unknown}"
+            echo "- **Releasable type filter matched:** ${HAS_RELEASABLE:-unknown}"
+            echo "- **Security-labelled PR(s) in range:** ${HAS_SECURITY:-unknown}"
+            echo "- **Release prep needed:** ${SHOULD_PREPARE:-unknown}"
+            if [[ "${SHOULD_PREPARE:-}" == "true" ]]; then
+              echo "- **Trigger:** ${TRIGGER:-(unknown)}"
+              echo "- **Recommended bump:** ${BUMP:-(unknown)}"
+              echo "- **Suggested version:** ${SUGGESTED_VERSION:-(maintainer pick)}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
