@@ -112,3 +112,60 @@ func TestParse_EmptyDockerfile(t *testing.T) {
 		t.Errorf("expected no build args, got %d", len(pr.BuildArgNames))
 	}
 }
+
+func TestParseCopyNode_Exclude(t *testing.T) {
+	const df = "FROM ubuntu:22.04\nCOPY --exclude=*.log . /app/\n"
+	pr, err := dockerfile.Parse(strings.NewReader(df))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 1 {
+		t.Fatalf("CopySources length: got %d, want 1", len(pr.CopySources))
+	}
+	src := pr.CopySources[0]
+	if len(src.Excludes) != 1 || src.Excludes[0] != "*.log" {
+		t.Errorf("Excludes: got %v, want [*.log]", src.Excludes)
+	}
+	if src.Stage != "" {
+		t.Errorf("Stage: expected empty, got %q", src.Stage)
+	}
+}
+
+func TestParseCopyNode_MultipleExcludes(t *testing.T) {
+	const df = "FROM ubuntu:22.04\nCOPY --exclude=*.log --exclude=*.tmp . /app/\n"
+	pr, err := dockerfile.Parse(strings.NewReader(df))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 1 {
+		t.Fatalf("CopySources length: got %d, want 1", len(pr.CopySources))
+	}
+	src := pr.CopySources[0]
+	want := []string{"*.log", "*.tmp"}
+	if len(src.Excludes) != len(want) {
+		t.Fatalf("Excludes length: got %d, want %d", len(src.Excludes), len(want))
+	}
+	for i, v := range want {
+		if src.Excludes[i] != v {
+			t.Errorf("Excludes[%d]: got %q, want %q", i, src.Excludes[i], v)
+		}
+	}
+}
+
+func TestParseCopyNode_FromAndExclude(t *testing.T) {
+	const df = "FROM ubuntu:22.04\nCOPY --from=builder --exclude=*.log /src/ /app/\n"
+	pr, err := dockerfile.Parse(strings.NewReader(df))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.CopySources) != 1 {
+		t.Fatalf("CopySources length: got %d, want 1", len(pr.CopySources))
+	}
+	src := pr.CopySources[0]
+	if src.Stage != "builder" {
+		t.Errorf("Stage: got %q, want builder", src.Stage)
+	}
+	if len(src.Excludes) != 1 || src.Excludes[0] != "*.log" {
+		t.Errorf("Excludes: got %v, want [*.log]", src.Excludes)
+	}
+}

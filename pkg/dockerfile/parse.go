@@ -19,6 +19,10 @@ type CopySource struct {
 	// Stage is the name of the build stage the source comes from (--from flag),
 	// or empty if the source is from the build context.
 	Stage string
+	// Excludes contains the patterns from --exclude= flags on this instruction,
+	// in source order. Each pattern is matched against paths relative to the
+	// source path (Docker's --exclude semantics).
+	Excludes []string
 }
 
 // ParseResult holds the result of parsing a Dockerfile.
@@ -91,10 +95,13 @@ func Parse(r io.Reader) (*ParseResult, error) {
 func parseCopyNode(node *parser.Node) CopySource {
 	cs := CopySource{}
 
-	// Check flags for --from=<stage>
+	// Check flags for --from=<stage> and --exclude=<pattern>
 	for _, flag := range node.Flags {
-		if strings.HasPrefix(flag, "--from=") {
+		switch {
+		case strings.HasPrefix(flag, "--from="):
 			cs.Stage = strings.TrimPrefix(flag, "--from=")
+		case strings.HasPrefix(flag, "--exclude="):
+			cs.Excludes = append(cs.Excludes, strings.TrimPrefix(flag, "--exclude="))
 		}
 	}
 
