@@ -72,8 +72,20 @@ docker run --rm \
   -v "$PWD:/work" \
   -w /work \
   ghcr.io/remkomolier/docker-hash:v0.1.0 \
-  --file Dockerfile --context .
+  docker-hash --file Dockerfile --context .
 ```
+
+### Package visibility
+
+GHCR packages are **private by default** when first pushed.
+Before unauthenticated pulls (as shown in the GitLab CI and `docker run` examples above) will work, the package must be made public once by the repository owner:
+
+1. Go to **https://github.com/users/RemkoMolier/packages/container/docker-hash/settings** (or navigate via
+   your profile → Packages → `docker-hash` → Package settings).
+2. Scroll to **Danger Zone** → **Change package visibility** → set to **Public**.
+
+This is a one-time step.
+After the package is public, all tagged images are pullable without authentication.
 
 ### Image tag strategy
 
