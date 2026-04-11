@@ -149,18 +149,14 @@ func loadDockerIgnore(contextDir string) (*patternmatcher.PatternMatcher, error)
 }
 
 // isIgnored returns true when the relative path should be excluded by the
-// .dockerignore rules in pm. For directories, MatchesOrParentMatches is used
-// so that an entire subtree can be skipped in one call; for files Matches is
-// used. When pm is nil (no .dockerignore) the function always returns false.
-func isIgnored(pm *patternmatcher.PatternMatcher, fileRel string, isDir bool) (bool, error) {
+// .dockerignore rules in pm. Uses MatchesOrParentMatches for both files and
+// directories (pm.Matches is deprecated and documented as buggy by the upstream
+// author). When pm is nil (no .dockerignore) the function always returns false.
+func isIgnored(pm *patternmatcher.PatternMatcher, fileRel string) (bool, error) {
 	if pm == nil {
 		return false, nil
 	}
-	slashRel := filepath.ToSlash(fileRel)
-	if isDir {
-		return pm.MatchesOrParentMatches(slashRel)
-	}
-	return pm.Matches(slashRel)
+	return pm.MatchesOrParentMatches(filepath.ToSlash(fileRel))
 }
 
 // resolvePattern resolves a COPY/ADD source pattern against contextDir and
@@ -220,6 +216,12 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 			continue
 		}
 		if info.IsDir() {
+			// canPruneIgnoredDirs is constant for the duration of the walk:
+			// we can only skip an entire subtree when no negation patterns
+			// exist in the matcher (e.g. "subdir" + "!subdir/keep.txt"
+			// requires descending into subdir and filtering file-by-file).
+			canPruneIgnoredDirs := pm == nil || !pm.Exclusions()
+
 			// Walk the directory and collect all regular files.
 			err = filepath.WalkDir(abs, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
@@ -234,15 +236,12 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 					return fmt.Errorf("path %q escapes build context", path)
 				}
 				// Apply .dockerignore filtering.
-				ignored, matchErr := isIgnored(pm, fileRel, d.IsDir())
+				ignored, matchErr := isIgnored(pm, fileRel)
 				if matchErr != nil {
 					return matchErr
 				}
 				if ignored {
-					// Only skip the entire directory when there are no negation
-					// patterns — if negations exist we must descend and filter
-					// file-by-file (e.g. "subdir" + "!subdir/keep.txt").
-					if d.IsDir() && !pm.Exclusions() {
+					if d.IsDir() && canPruneIgnoredDirs {
 						return fs.SkipDir
 					}
 					return nil
@@ -264,7 +263,7 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 				return nil, relErr
 			}
 			// Apply .dockerignore filtering.
-			ignored, matchErr := isIgnored(pm, fileRel, false)
+			ignored, matchErr := isIgnored(pm, fileRel)
 			if matchErr != nil {
 				return nil, matchErr
 			}
