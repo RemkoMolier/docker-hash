@@ -69,7 +69,8 @@ The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
    declarations.
 2. For each `COPY`/`ADD` that references the **build context** (i.e. without
    `--from=<stage>`), all matching files are collected and their contents are
-   hashed.
+   hashed. If a `.dockerignore` file is present in the context root, it is
+   applied before collecting files — matching the behaviour of `docker build`.
 3. Only build arguments that are **declared** with `ARG` in the Dockerfile
    **and** explicitly supplied via `--build-arg` are included in the hash.
    Undeclared `--build-arg` values and declared args with no supplied value are
@@ -79,11 +80,6 @@ The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
 
 ### Known limitations
 
-- **`.dockerignore` is not honoured.** A real `docker build` filters the build
-  context through `.dockerignore` before `COPY`/`ADD` see anything. This tool
-  walks raw paths, so changes to ignored files (build artifacts, `.git/`,
-  secrets) will affect the hash even though they have no effect on the resulting
-  image. Support for `.dockerignore` is planned for a future release.
 - **File permissions are not hashed.** Two contexts that are byte-for-byte
   identical but differ only in file modes (e.g. `chmod`) produce the same
   hash even though Docker may build different images.
