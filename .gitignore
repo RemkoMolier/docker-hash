@@ -1,5 +1,5 @@
-# Binaries
-docker-hash
+# Binaries (root-level build output only)
+/docker-hash
 *.exe
 *.test
 
