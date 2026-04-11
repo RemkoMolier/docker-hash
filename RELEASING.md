@@ -33,6 +33,16 @@ Triggers 2 and 3 mark the issue body with an `URGENT — security` header so it 
 
 The only thing that **cannot** trigger a release prep is "no commits at all since the latest tag" — there is nothing to ship in that case, so the workflow no-ops even with `reason=security`.
 
+#### Where the `security` label comes from
+
+The `security` label is **applied manually** today.
+A maintainer adds it to a merged PR (or to an open PR before merge) when the change addresses a security issue.
+
+A planned follow-up (see [#43](https://github.com/RemkoMolier/docker-hash/issues/43)) will have Renovate auto-apply the same label to dependency-update PRs that come from a GHSA / OSV vulnerability advisory, via a top-level `vulnerabilityAlerts.labels` rule in `renovate.json`.
+That removes the human-memory step for the most common case (security-driven dep bumps) without changing how the cadence workflow reads the label — the same label name flows through unchanged.
+
+External contributors usually can't apply labels themselves; see the "Releases and the security label" section in [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor side of this flow.
+
 ## What counts as a releasable change
 
 A commit since the latest tag is **releasable** if its message starts with one of:
