@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
@@ -38,9 +39,9 @@ func main() {
 	flag.Parse()
 
 	// Resolve the Dockerfile path relative to context if it is not absolute.
-	if !isAbs(dockerfilePath) {
+	if !filepath.IsAbs(dockerfilePath) {
 		// Check if the Dockerfile sits in the context dir.
-		candidate := joinPath(contextDir, dockerfilePath)
+		candidate := filepath.Join(contextDir, dockerfilePath)
 		if _, err := os.Stat(candidate); err == nil {
 			dockerfilePath = candidate
 		}
@@ -73,12 +74,4 @@ func parseBuildArgs(args []string) map[string]string {
 		}
 	}
 	return m
-}
-
-func isAbs(path string) bool {
-	return len(path) > 0 && (path[0] == '/' || (len(path) > 1 && path[1] == ':'))
-}
-
-func joinPath(dir, file string) string {
-	return strings.TrimRight(dir, "/\\") + "/" + file
 }
