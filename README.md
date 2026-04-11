@@ -65,10 +65,30 @@ The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
 2. For each `COPY`/`ADD` that references the **build context** (i.e. without
    `--from=<stage>`), all matching files are collected and their contents are
    hashed.
-3. Only build arguments that are **declared** with `ARG` in the Dockerfile are
-   included in the hash; undeclared `--build-arg` values are ignored.
-4. All contributions are combined with section separators into a final
-   SHA-256 digest.
+3. Only build arguments that are **declared** with `ARG` in the Dockerfile
+   **and** explicitly supplied via `--build-arg` are included in the hash.
+   Undeclared `--build-arg` values and declared args with no supplied value are
+   both ignored.
+4. All contributions are combined with labelled section separators and a
+   per-file SHA-256 sub-hash into a final SHA-256 digest.
+
+### Known limitations
+
+- **`.dockerignore` is not honoured.** A real `docker build` filters the build
+  context through `.dockerignore` before `COPY`/`ADD` see anything. This tool
+  walks raw paths, so changes to ignored files (build artifacts, `.git/`,
+  secrets) will affect the hash even though they have no effect on the resulting
+  image. Support for `.dockerignore` is planned for a future release.
+- **File permissions are not hashed.** Two contexts that are byte-for-byte
+  identical but differ only in file modes (e.g. `chmod`) produce the same
+  hash even though Docker may build different images.
+- **`ADD <url>` is hashed by URL string, not remote content.** Two builds that
+  use the same URL but against different remote content will produce the same
+  hash. Use a content-addressed URL (e.g. include a digest or version) to get
+  reliable change detection.
+- **`**` glob patterns are not supported.** BuildKit supports recursive `**`
+  patterns in `COPY`; `docker-hash` uses `filepath.Glob` which does not.
+  Affected patterns will silently match nothing.
 
 ---
 

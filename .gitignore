@@ -6,5 +6,5 @@
 # Build output
 /dist/
 
-# Go workspace
+# Go vendor directory
 /vendor/

@@ -24,6 +24,9 @@ type Options struct {
 	// ContextDir is the root of the build context.
 	ContextDir string
 	// BuildArgs is a map of build argument names to values supplied by the caller.
+	// Only arguments that are declared with ARG in the Dockerfile are included
+	// in the hash; undeclared entries are silently ignored. Arguments present in
+	// the Dockerfile ARG list but absent from this map are also omitted.
 	BuildArgs map[string]string
 }
 
@@ -45,14 +48,19 @@ func Compute(opts Options) (string, error) {
 	writeSection(h, "dockerfile")
 	h.Write(pr.RawContent)
 
-	// 2. Hash build arguments (only those declared in the Dockerfile, sorted).
+	// 2. Hash build arguments (only those declared in the Dockerfile AND
+	// explicitly provided by the caller, sorted for determinism).
 	writeSection(h, "build-args")
 	argNames := make([]string, 0, len(pr.BuildArgNames))
 	argNames = append(argNames, pr.BuildArgNames...)
 	sort.Strings(argNames)
 	for _, name := range argNames {
-		val := opts.BuildArgs[name]
-		fmt.Fprintf(h, "%s=%s\n", name, val)
+		val, ok := opts.BuildArgs[name]
+		if !ok {
+			// Not provided by the caller — omit from hash.
+			continue
+		}
+		fmt.Fprintf(h, "%d:%s=%d:%s\n", len(name), name, len(val), val)
 	}
 
 	// 3. Hash the build-context files referenced by COPY/ADD.
@@ -110,25 +118,56 @@ func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]
 }
 
 // resolvePattern resolves a COPY/ADD source pattern against contextDir and
-// returns relative file paths (not directories) that match.
+// returns relative file paths (not directories) that match. Only regular files
+// are returned; symlinks and special files are skipped. All resolved paths are
+// verified to remain within contextDir (path traversal guard).
 func resolvePattern(contextDir, pattern string) ([]string, error) {
+	// Short-circuit for URLs — return the URL string as a synthetic entry.
+	if isURL(pattern) {
+		return []string{pattern}, nil
+	}
+
+	absContext, err := filepath.Abs(contextDir)
+	if err != nil {
+		return nil, err
+	}
+
 	// Glob relative to context dir.
-	absPattern := filepath.Join(contextDir, filepath.FromSlash(pattern))
+	absPattern := filepath.Join(absContext, filepath.FromSlash(pattern))
+
+	// Path traversal guard on the pattern itself (before any filesystem access).
+	// filepath.Join already collapses ".." segments, so this catches escaping paths.
+	patternRel, relErr := filepath.Rel(absContext, absPattern)
+	if relErr != nil || patternRel == ".." || strings.HasPrefix(patternRel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("COPY/ADD source %q escapes build context", pattern)
+	}
+
 	matches, err := filepath.Glob(absPattern)
 	if err != nil {
 		return nil, err
 	}
 
-	// If no glob matches, check if the path itself exists (e.g. plain dir copy).
+	// If no glob matches, check if the literal path itself exists (e.g. plain
+	// directory copy without a wildcard).
 	if len(matches) == 0 {
-		if _, statErr := os.Stat(absPattern); statErr == nil {
+		if _, statErr := os.Lstat(absPattern); statErr == nil {
 			matches = []string{absPattern}
 		}
 	}
 
 	var files []string
 	for _, abs := range matches {
-		info, err := os.Stat(abs)
+		// Path traversal guard: ensure the resolved path stays within the context.
+		absM, err := filepath.Abs(abs)
+		if err != nil {
+			return nil, err
+		}
+		rel, err := filepath.Rel(absContext, absM)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("COPY/ADD source %q escapes build context", pattern)
+		}
+
+		info, err := os.Lstat(abs)
 		if err != nil {
 			continue
 		}
@@ -138,43 +177,41 @@ func resolvePattern(contextDir, pattern string) ([]string, error) {
 				if err != nil {
 					return err
 				}
-				if !d.IsDir() {
-					rel, relErr := filepath.Rel(contextDir, path)
-					if relErr != nil {
-						return relErr
-					}
-					files = append(files, rel)
+				// Only include regular files; skip symlinks, FIFOs, devices, etc.
+				if !d.Type().IsRegular() {
+					return nil
 				}
+				fileRel, relErr := filepath.Rel(absContext, path)
+				if relErr != nil {
+					return relErr
+				}
+				// Traversal guard inside directory walk.
+				if fileRel == ".." || strings.HasPrefix(fileRel, ".."+string(filepath.Separator)) {
+					return fmt.Errorf("path %q escapes build context", path)
+				}
+				files = append(files, fileRel)
 				return nil
 			})
 			if err != nil {
 				return nil, err
 			}
-		} else {
-			rel, err := filepath.Rel(contextDir, abs)
-			if err != nil {
-				return nil, err
-			}
+		} else if info.Mode().IsRegular() {
 			files = append(files, rel)
 		}
-	}
-
-	// Also handle URLs (http/https) in ADD — include them as a literal string
-	// contribution so the hash changes if the URL changes.
-	if isURL(pattern) {
-		files = append(files, pattern)
+		// Non-regular, non-directory entries (symlinks, FIFOs, devices) are skipped.
 	}
 
 	return files, nil
 }
 
-// hashFile writes the relative path and content of a file into h.
+// hashFile hashes a single context file into the outer hasher h.
+// Each file is first hashed independently (SHA-256), then its path,
+// byte count and sub-hash are written into h using a length-prefixed
+// format to prevent cross-entry collisions.
 func hashFile(h hash.Hash, relPath, absPath string) error {
-	// Write path separator for clarity.
-	fmt.Fprintf(h, "\nfile:%s\n", filepath.ToSlash(relPath))
-
-	// If this is a URL (added by resolvePattern), just hash the URL string.
 	if isURL(relPath) {
+		// URLs are hashed by their string value, not by remote content.
+		fmt.Fprintf(h, "url:%d:%s\n", len(relPath), relPath)
 		return nil
 	}
 
@@ -184,9 +221,13 @@ func hashFile(h hash.Hash, relPath, absPath string) error {
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(h, f); err != nil {
+	fh := sha256.New()
+	n, err := io.Copy(fh, f)
+	if err != nil {
 		return err
 	}
+	slashPath := filepath.ToSlash(relPath)
+	fmt.Fprintf(h, "file:%d:%s:%d:%x\n", len(slashPath), slashPath, n, fh.Sum(nil))
 	return nil
 }
 
@@ -194,3 +235,4 @@ func hashFile(h hash.Hash, relPath, absPath string) error {
 func isURL(pattern string) bool {
 	return strings.HasPrefix(pattern, "http://") || strings.HasPrefix(pattern, "https://")
 }
+

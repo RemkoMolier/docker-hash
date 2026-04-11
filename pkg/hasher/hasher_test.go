@@ -202,29 +202,44 @@ func TestCompute_DirectoryCopy(t *testing.T) {
 
 func TestCompute_MultistageIgnoresStageFiles(t *testing.T) {
 	// COPY --from=builder should NOT cause the hasher to look for local files.
+	// This Dockerfile has no COPY that would pick up everything in the context,
+	// so only `config/` is hashed from the build context.
 	dir := buildTestContext(t, map[string]string{
 		"Dockerfile": `FROM golang:1.21 AS builder
-COPY . /src
-RUN go build -o /bin/app /src
+RUN echo "build step"
 
 FROM ubuntu:22.04
 COPY --from=builder /bin/app /usr/local/bin/app
 COPY config/ /etc/app/
 `,
-		"go.mod":             "module example\n",
-		"main.go":            "package main\nfunc main(){}\n",
-		"config/app.yaml":    "key: value\n",
+		"config/app.yaml": "key: value\n",
 	})
 
-	h, err := hasher.Compute(hasher.Options{
+	opts := hasher.Options{
 		DockerfilePath: filepath.Join(dir, "Dockerfile"),
 		ContextDir:     dir,
-	})
+	}
+
+	h1, err := hasher.Compute(opts)
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
-	if h == "" {
-		t.Error("expected a non-empty hash")
+
+	// Create a file at a path that WOULD be matched if the --from= filter
+	// were broken (/bin/app inside the context). The hash must not change.
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bin", "app"), []byte("decoy binary"), 0o755); err != nil {
+		t.Fatalf("write bin/app: %v", err)
+	}
+
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after adding decoy: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("--from=<stage> sources must not pull in local context files")
 	}
 }
 
@@ -243,5 +258,135 @@ func TestCompute_HashLength(t *testing.T) {
 	// SHA-256 hex digest is always 64 characters.
 	if len(h) != 64 {
 		t.Errorf("expected 64-char hash, got %d chars: %s", len(h), h)
+	}
+}
+
+func TestCompute_PathTraversal(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY ../etc/passwd /app/\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Error("expected an error for COPY source escaping build context, got nil")
+	}
+}
+
+func TestCompute_GlobPattern(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":   "FROM ubuntu:22.04\nCOPY *.py /app/\n",
+		"main.py":      "print('main')\n",
+		"helper.py":    "def helper(): pass\n",
+		"ignored.txt":  "not a py file\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Changing a matched .py file must change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('changed')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after change: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("modifying a glob-matched file should change the hash")
+	}
+
+	// Changing the non-matched .txt file must NOT change the hash (reset .py first).
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('main')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile reset: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after reset: %v", err)
+	}
+	if h1 != h3 {
+		t.Error("hash should be stable after resetting the file")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile ignored.txt: %v", err)
+	}
+	h4, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after ignored change: %v", err)
+	}
+	if h3 != h4 {
+		t.Error("changing a file not matched by the glob should not change the hash")
+	}
+}
+
+func TestCompute_AddURL(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nADD https://example.com/file.tar.gz /tmp/\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if len(h1) != 64 {
+		t.Errorf("expected 64-char hash, got %d", len(h1))
+	}
+
+	// A different URL must produce a different hash.
+	dir2 := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nADD https://example.com/other.tar.gz /tmp/\n",
+	})
+	h2, err := hasher.Compute(hasher.Options{DockerfilePath: filepath.Join(dir2, "Dockerfile"), ContextDir: dir2})
+	if err != nil {
+		t.Fatalf("Compute dir2: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("different ADD URLs should produce different hashes")
+	}
+}
+
+func TestCompute_BuildArgWithEqualsInValue(t *testing.T) {
+	// ARG values that contain '=' must be handled correctly.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nARG KEY\nCOPY app.py /app/\n",
+		"app.py":     "print('hello')\n",
+	})
+
+	opts1 := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+		BuildArgs:      map[string]string{"KEY": "a=b=c"},
+	}
+	opts2 := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+		BuildArgs:      map[string]string{"KEY": "x=y"},
+	}
+
+	h1, err := hasher.Compute(opts1)
+	if err != nil {
+		t.Fatalf("Compute opts1: %v", err)
+	}
+	h2, err := hasher.Compute(opts2)
+	if err != nil {
+		t.Fatalf("Compute opts2: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("different build arg values (with '=' in value) should produce different hashes")
 	}
 }

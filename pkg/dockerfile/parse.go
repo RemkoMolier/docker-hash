@@ -3,6 +3,7 @@
 package dockerfile
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"strings"
@@ -24,10 +25,12 @@ type CopySource struct {
 type ParseResult struct {
 	// RawContent is the raw Dockerfile content.
 	RawContent []byte
-	// CopySources contains all COPY and ADD source paths from the build context
-	// (i.e., those without a --from flag referring to another stage).
+	// CopySources contains all COPY and ADD instructions found in the Dockerfile,
+	// including those that reference another build stage via --from. Callers
+	// should inspect Stage to distinguish build-context sources (Stage == "")
+	// from inter-stage copies (Stage != "").
 	CopySources []CopySource
-	// BuildArgNames are the names of ARG instructions found in the Dockerfile.
+	// BuildArgNames are the unique names of ARG instructions found in the Dockerfile.
 	BuildArgNames []string
 }
 
@@ -48,7 +51,7 @@ func Parse(r io.Reader) (*ParseResult, error) {
 		return nil, err
 	}
 
-	result, err := parser.Parse(strings.NewReader(string(raw)))
+	result, err := parser.Parse(bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +59,8 @@ func Parse(r io.Reader) (*ParseResult, error) {
 	pr := &ParseResult{
 		RawContent: raw,
 	}
+
+	seenArgs := make(map[string]struct{})
 
 	for _, node := range result.AST.Children {
 		switch strings.ToLower(node.Value) {
@@ -70,7 +75,11 @@ func Parse(r io.Reader) (*ParseResult, error) {
 				if idx := strings.Index(argExpr, "="); idx >= 0 {
 					name = argExpr[:idx]
 				}
-				pr.BuildArgNames = append(pr.BuildArgNames, name)
+				// Deduplicate: the same ARG name can appear in multiple stages.
+				if _, ok := seenArgs[name]; !ok {
+					seenArgs[name] = struct{}{}
+					pr.BuildArgNames = append(pr.BuildArgNames, name)
+				}
 			}
 		}
 	}
