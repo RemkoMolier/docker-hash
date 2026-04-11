@@ -199,6 +199,13 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 		}
 	}
 
+	// If the pattern resolved to no filesystem entries at all, return an error
+	// that names the offending pattern. Docker itself rejects such Dockerfiles
+	// with "no such file or directory" or "no source files were specified".
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("COPY/ADD source %q matches no files in build context", pattern)
+	}
+
 	var files []string
 	for _, abs := range matches {
 		// Path traversal guard: ensure the resolved path stays within the context.
