@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
       - name: Install markdownlint-cli2 + custom rules
         # Install into a tmp prefix outside the repo checkout so no Node
         # tooling files (package.json, package-lock.json, node_modules/)
