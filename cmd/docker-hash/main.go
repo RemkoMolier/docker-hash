@@ -81,7 +81,7 @@ func main() {
 // printVersion writes the version banner to w. Extracted so it can be unit-tested
 // without shelling out to a subprocess.
 func printVersion(w io.Writer) {
-	fmt.Fprintf(w, "docker-hash %s (%s, %s)\n", version, commit, date)
+	_, _ = fmt.Fprintf(w, "docker-hash %s (%s, %s)\n", version, commit, date)
 }
 
 // parseBuildArgs converts a slice of "NAME=VALUE" or "NAME" strings into a map.
