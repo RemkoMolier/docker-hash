@@ -390,3 +390,175 @@ func TestCompute_BuildArgWithEqualsInValue(t *testing.T) {
 		t.Error("different build arg values (with '=' in value) should produce different hashes")
 	}
 }
+
+// ---- .dockerignore tests ----
+
+func TestCompute_DockerIgnore_ExcludesFiles(t *testing.T) {
+	// **/*.log should exclude log files even when COPY . picks them up.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":   "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"app.py":       "print('hello')\n",
+		"build.log":    "some log output\n",
+		".dockerignore": "**/*.log\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Modifying the log file must NOT change the hash (it is ignored).
+	if err := os.WriteFile(filepath.Join(dir, "build.log"), []byte("different log\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after log change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("modifying an ignored file (*.log) should not change the hash")
+	}
+
+	// Modifying the non-ignored .py file MUST change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('changed')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile py: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after py change: %v", err)
+	}
+	if h1 == h3 {
+		t.Error("modifying a non-ignored file should change the hash")
+	}
+}
+
+func TestCompute_DockerIgnore_NegationPattern(t *testing.T) {
+	// *.log ignores all logs; !important.log re-includes that one file.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"app.py":        "print('hello')\n",
+		"debug.log":     "debug info\n",
+		"important.log": "critical data\n",
+		".dockerignore": "*.log\n!important.log\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Changing debug.log (ignored) must not change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "debug.log"), []byte("changed debug\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile debug.log: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after debug.log change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("changing an ignored file (debug.log) should not change the hash")
+	}
+
+	// Changing important.log (re-included via negation) MUST change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "important.log"), []byte("changed critical\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile important.log: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after important.log change: %v", err)
+	}
+	if h1 == h3 {
+		t.Error("changing a re-included file (!important.log) should change the hash")
+	}
+}
+
+func TestCompute_DockerIgnore_Missing(t *testing.T) {
+	// No .dockerignore file — behaviour must be identical to the current implementation.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY app.py /app/\n",
+		"app.py":     "print('hello')\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if len(h1) != 64 {
+		t.Errorf("expected 64-char hash, got %d", len(h1))
+	}
+
+	// Hash should be stable.
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute 2nd: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("hash should be stable when .dockerignore is absent")
+	}
+}
+
+func TestCompute_DockerIgnore_SelfIgnore(t *testing.T) {
+	// A .dockerignore that ignores itself should be handled the same way docker
+	// build handles it: the file is still read and applied, but the .dockerignore
+	// file itself is excluded from the build context.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"app.py":        "print('hello')\n",
+		".dockerignore": ".dockerignore\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Changing .dockerignore itself must NOT change the hash because the file
+	// ignores itself.
+	if err := os.WriteFile(filepath.Join(dir, ".dockerignore"), []byte(".dockerignore\n# changed comment\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .dockerignore: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after .dockerignore change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("a self-ignoring .dockerignore should not affect the hash when it changes")
+	}
+}
+
+func TestCompute_DockerIgnore_PathTraversalStillErrors(t *testing.T) {
+	// The path-traversal guard must fire even when .dockerignore would have
+	// excluded the offending path.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY ../etc/passwd /app/\n",
+		".dockerignore": "../etc/passwd\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Error("expected an error for COPY source escaping build context, got nil")
+	}
+}

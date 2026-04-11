@@ -2,7 +2,10 @@ module github.com/RemkoMolier/docker-hash
 
 go 1.25.5
 
-require github.com/moby/buildkit v0.18.0
+require (
+	github.com/moby/buildkit v0.18.0
+	github.com/moby/patternmatcher v0.6.0
+)
 
 require (
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect

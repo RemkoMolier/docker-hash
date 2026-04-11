@@ -3,6 +3,7 @@
 package hasher
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/RemkoMolier/docker-hash/pkg/dockerfile"
+	"github.com/moby/patternmatcher"
 )
 
 // Options holds the inputs for hash computation.
@@ -93,6 +95,11 @@ func writeSection(h hash.Hash, label string) {
 // collectContextFiles returns the relative paths of all build-context files
 // referenced by the given COPY/ADD sources, deduplicated.
 func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]string, error) {
+	pm, err := loadDockerIgnore(contextDir)
+	if err != nil {
+		return nil, fmt.Errorf("load .dockerignore: %w", err)
+	}
+
 	seen := make(map[string]struct{})
 	var files []string
 
@@ -102,7 +109,7 @@ func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]
 			continue
 		}
 		for _, pattern := range src.Paths {
-			matched, err := resolvePattern(contextDir, pattern)
+			matched, err := resolvePattern(contextDir, pattern, pm)
 			if err != nil {
 				return nil, err
 			}
@@ -117,11 +124,59 @@ func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]
 	return files, nil
 }
 
+// loadDockerIgnore reads .dockerignore from contextDir and returns a
+// PatternMatcher built from its patterns. If the file does not exist a nil
+// matcher is returned (no-op). Missing file is never an error.
+func loadDockerIgnore(contextDir string) (*patternmatcher.PatternMatcher, error) {
+	f, err := os.Open(filepath.Join(contextDir, ".dockerignore"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var patterns []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		patterns = append(patterns, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	return patternmatcher.New(patterns)
+}
+
+// isIgnored returns true when the relative path should be excluded by the
+// .dockerignore rules in pm. For directories, MatchesOrParentMatches is used
+// so that an entire subtree can be skipped in one call; for files Matches is
+// used. When pm is nil (no .dockerignore) the function always returns false.
+func isIgnored(pm *patternmatcher.PatternMatcher, fileRel string, isDir bool) (bool, error) {
+	if pm == nil {
+		return false, nil
+	}
+	slashRel := filepath.ToSlash(fileRel)
+	if isDir {
+		return pm.MatchesOrParentMatches(slashRel)
+	}
+	return pm.Matches(slashRel)
+}
+
 // resolvePattern resolves a COPY/ADD source pattern against contextDir and
 // returns relative file paths (not directories) that match. Only regular files
 // are returned; symlinks and special files are skipped. All resolved paths are
-// verified to remain within contextDir (path traversal guard).
-func resolvePattern(contextDir, pattern string) ([]string, error) {
+// verified to remain within contextDir (path traversal guard). Files that match
+// the supplied .dockerignore pattern matcher (pm) are excluded; pass nil for no
+// filtering.
+func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatcher) ([]string, error) {
 	// Short-circuit for URLs — return the URL string as a synthetic entry.
 	if isURL(pattern) {
 		return []string{pattern}, nil
@@ -177,10 +232,6 @@ func resolvePattern(contextDir, pattern string) ([]string, error) {
 				if err != nil {
 					return err
 				}
-				// Only include regular files; skip symlinks, FIFOs, devices, etc.
-				if !d.Type().IsRegular() {
-					return nil
-				}
 				fileRel, relErr := filepath.Rel(absContext, path)
 				if relErr != nil {
 					return relErr
@@ -188,6 +239,21 @@ func resolvePattern(contextDir, pattern string) ([]string, error) {
 				// Traversal guard inside directory walk.
 				if fileRel == ".." || strings.HasPrefix(fileRel, ".."+string(filepath.Separator)) {
 					return fmt.Errorf("path %q escapes build context", path)
+				}
+				// Apply .dockerignore filtering.
+				ignored, matchErr := isIgnored(pm, fileRel, d.IsDir())
+				if matchErr != nil {
+					return matchErr
+				}
+				if ignored {
+					if d.IsDir() {
+						return fs.SkipDir
+					}
+					return nil
+				}
+				// Only include regular files; skip symlinks, FIFOs, devices, etc.
+				if !d.Type().IsRegular() {
+					return nil
 				}
 				files = append(files, fileRel)
 				return nil
@@ -200,6 +266,14 @@ func resolvePattern(contextDir, pattern string) ([]string, error) {
 			fileRel, relErr := filepath.Rel(absContext, abs)
 			if relErr != nil {
 				return nil, relErr
+			}
+			// Apply .dockerignore filtering.
+			ignored, matchErr := isIgnored(pm, fileRel, false)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if ignored {
+				continue
 			}
 			files = append(files, fileRel)
 		}
