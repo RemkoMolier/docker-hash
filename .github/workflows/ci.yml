@@ -58,15 +58,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Build binary
         run: |
+          VERSION=$(git describe --tags --always --dirty)
+          COMMIT=$(git rev-parse HEAD)
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           go build \
-            -ldflags "-X main.version=$(git describe --tags --always --dirty) \
-                      -X main.commit=$(git rev-parse HEAD) \
-                      -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -ldflags "-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
             ./cmd/docker-hash/
 
   mod-tidy:

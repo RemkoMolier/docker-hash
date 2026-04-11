@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +50,7 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("docker-hash %s, commit %s, built %s\n", version, commit, date)
+		printVersion(os.Stdout)
 		return
 	}
 
@@ -75,6 +76,12 @@ func main() {
 	}
 
 	fmt.Println(hash)
+}
+
+// printVersion writes the version banner to w. Extracted so it can be unit-tested
+// without shelling out to a subprocess.
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "docker-hash %s (%s, %s)\n", version, commit, date)
 }
 
 // parseBuildArgs converts a slice of "NAME=VALUE" or "NAME" strings into a map.

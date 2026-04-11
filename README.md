@@ -64,6 +64,25 @@ The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
 
 ---
 
+## Checking your version
+
+```sh
+docker-hash --version
+# docker-hash dev (none, unknown)
+```
+
+When built with version metadata injected via ldflags (e.g. by a release pipeline):
+
+```sh
+go build \
+  -ldflags "-X main.version=v0.1.0 -X main.commit=abc1234 -X main.date=2026-01-01T00:00:00Z" \
+  ./cmd/docker-hash/
+./docker-hash --version
+# docker-hash v0.1.0 (abc1234, 2026-01-01T00:00:00Z)
+```
+
+---
+
 ## How it works
 
 1. The Dockerfile is parsed to extract `COPY`/`ADD` source paths and `ARG`
