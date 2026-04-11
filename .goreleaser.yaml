@@ -52,3 +52,8 @@ changelog:
   filters:
     exclude:
       - "^(docs|chore|test|ci|style)(\\(.*\\))?:"
+
+release:
+  # Auto-detect hyphenated semver suffixes (-rc1, -beta, -alpha, etc.)
+  # and mark the GitHub Release as a pre-release accordingly.
+  prerelease: auto
