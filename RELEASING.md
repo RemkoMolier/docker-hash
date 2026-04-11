@@ -35,11 +35,15 @@ The only thing that **cannot** trigger a release prep is "no commits at all sinc
 
 #### Where the `security` label comes from
 
-The `security` label is **applied manually** today.
-A maintainer adds it to a merged PR (or to an open PR before merge) when the change addresses a security issue.
+The `security` label that trigger 2 reads can arrive on a PR in two ways:
 
-A planned follow-up (see [#43](https://github.com/RemkoMolier/docker-hash/issues/43)) will have Renovate auto-apply the same label to dependency-update PRs that come from a GHSA / OSV vulnerability advisory, via a top-level `vulnerabilityAlerts.labels` rule in `renovate.json`.
-That removes the human-memory step for the most common case (security-driven dep bumps) without changing how the cadence workflow reads the label — the same label name flows through unchanged.
+- **Automatically by Renovate** for any PR opened in response to a GHSA / OSV vulnerability advisory.
+  This is configured by the `vulnerabilityAlerts.labels` rule in [renovate.json](renovate.json) and requires no human action — the label appears the moment Renovate opens the PR.
+- **Manually by a maintainer** for any other security-sensitive PR: an upstream advisory the project picks up before Renovate notices it, an auth or input-validation fix that isn't a dep bump, a fix for a private security report, etc.
+  Apply the label via `gh pr edit <num> --add-label security` or in the GitHub UI.
+
+Both paths feed the same label, so the cadence workflow doesn't need to distinguish them and the maintainer doesn't need to remember which kind of fix they're shipping.
+If Renovate ever stops applying the label (config drift, broken upstream, etc.) the failure mode is the loud one — the label is missing, the maintainer notices, the config gets fixed — rather than a silent fallback that hides the bug.
 
 External contributors usually can't apply labels themselves; see the "Releases and the security label" section in [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor side of this flow.
 

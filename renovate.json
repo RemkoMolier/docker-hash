@@ -16,5 +16,8 @@
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "3 days"
     }
-  ]
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"]
+  }
 }
