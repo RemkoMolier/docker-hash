@@ -121,7 +121,7 @@ The `file` and `context` inputs are resolved relative to the workflow's checkout
 
 - name: Compute Docker hash
   id: docker_hash
-  uses: RemkoMolier/docker-hash@v0.1.0
+  uses: RemkoMolier/docker-hash@v0.1.1
   with:
     file: Dockerfile
     context: .
@@ -141,7 +141,7 @@ When you want a later step to consume the hash via a fixed environment variable 
 - uses: actions/checkout@v6
 
 - name: Compute Docker hash
-  uses: RemkoMolier/docker-hash@v0.1.0
+  uses: RemkoMolier/docker-hash@v0.1.1
   with:
     context: ./services/api
     export-env-name: API_IMAGE_HASH
@@ -152,6 +152,22 @@ When you want a later step to consume the hash via a fixed environment variable 
 
 The action always exposes the digest as a stable `hash` step output.
 The optional `export-env-name` is an additional convenience that mirrors the same value into `$GITHUB_ENV` for the rest of the job.
+
+### Tag strategy
+
+The release workflow maintains floating major and minor git tags alongside each immutable `vX.Y.Z` release,
+mirroring the [image tag strategy](#image-tag-strategy):
+
+| Ref | Updates on | Recommended for |
+|---|---|---|
+| `vX.Y.Z` (e.g. `v0.1.1`) | Never — immutable | **Production / pinned workflows** |
+| `vX.Y` (e.g. `v0.1`) | Every patch release in that minor | Patch-level auto-updates |
+| `vX` (e.g. `v0`) | Every non-pre-release in that major | Minor-level auto-updates |
+
+Pre-release tags (e.g. `v0.2.0-rc1`) are immutable;
+the floating `vX.Y` / `vX` refs are not updated for pre-releases.
+
+**Recommendation:** pin to `vX.Y.Z` for reproducible CI runs.
 
 ### Inputs
 

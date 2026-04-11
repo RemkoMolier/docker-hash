@@ -3,7 +3,13 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Shape filter: only run on tag pushes with at least two dots,
+      # which is enough to exclude the floating action refs (vX, vX.Y)
+      # maintained by the "Update floating action tags" step below so
+      # they can't re-trigger this workflow. Stricter semver validation
+      # (`^v[0-9]+\.[0-9]+\.[0-9]+$`, plus pre-release handling) lives
+      # inside that step, not in the trigger.
+      - 'v*.*.*'
 
 permissions:
   contents: write
@@ -44,3 +50,39 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update floating action tags
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Floating major/minor git tags (vX, vX.Y) are the action-side
+          # equivalent of the docker_manifests floating image tags in
+          # .goreleaser.yaml. They let consumers pin
+          # `uses: RemkoMolier/docker-hash@v0` (or @v0.1) and get patch/minor
+          # updates automatically. Skip pre-releases so hyphenated tags
+          # like v0.2.0-rc1 never promote to the floating refs, matching
+          # the skip_push policy for docker_manifests.
+          if [[ "$TAG" == *-* ]]; then
+            echo "::notice::tag '$TAG' is a pre-release, skipping floating action tag update"
+            exit 0
+          fi
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+            echo "::notice::tag '$TAG' is not a simple semver vX.Y.Z, skipping floating action tag update"
+            exit 0
+          fi
+          # Resolve the commit the release tag points at explicitly, rather
+          # than trusting ${{ github.sha }}. That context value is the commit
+          # for push-of-lightweight-tag events, but for annotated-tag pushes
+          # (which RELEASING.md prescribes for all release tags) some edge
+          # cases have been reported where it resolves to the tag object
+          # instead of the underlying commit, which would point the floating
+          # refs at a nested tag. `^{commit}` peels annotated tags to their
+          # commit unconditionally.
+          COMMIT=$(git rev-parse "${TAG}^{commit}")
+          MAJOR="v${BASH_REMATCH[1]}"
+          MINOR="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          echo "Updating floating action tags: $MAJOR, $MINOR -> $COMMIT (from $TAG)"
+          git tag -f "$MAJOR" "$COMMIT"
+          git tag -f "$MINOR" "$COMMIT"
+          git push --force origin "refs/tags/$MAJOR" "refs/tags/$MINOR"
