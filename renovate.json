@@ -8,6 +8,11 @@
       "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"]
     },
     {
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["action"],
+      "pinDigests": true
+    },
+    {
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "3 days"
     }
