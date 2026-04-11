@@ -1,5 +1,11 @@
 # docker-hash
 
+[![Release](https://img.shields.io/github/v/release/RemkoMolier/docker-hash?logo=github&label=release)](https://github.com/RemkoMolier/docker-hash/releases/latest)
+[![License](https://img.shields.io/github/license/RemkoMolier/docker-hash)](https://github.com/RemkoMolier/docker-hash/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/RemkoMolier/docker-hash/ci.yml?branch=main&label=CI&logo=github)](https://github.com/RemkoMolier/docker-hash/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/RemkoMolier/docker-hash)](https://goreportcard.com/report/github.com/RemkoMolier/docker-hash)
+[![Marketplace](https://img.shields.io/badge/Marketplace-docker--hash-blue?logo=github)](https://github.com/marketplace/actions/docker-hash)
+
 A Go tool that computes a deterministic SHA-256 hash for a Docker image build, based on the **Dockerfile content**, any **build arguments** and the **files referenced by `COPY`/`ADD` instructions** within the build context.
 
 The hash changes whenever:
