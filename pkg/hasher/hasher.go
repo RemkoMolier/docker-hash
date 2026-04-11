@@ -10,12 +10,16 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/RemkoMolier/docker-hash/pkg/dockerfile"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/moby/patternmatcher"
 	"github.com/moby/patternmatcher/ignorefile"
 )
@@ -31,6 +35,16 @@ type Options struct {
 	// in the hash; undeclared entries are silently ignored. Arguments present in
 	// the Dockerfile ARG list but absent from this map are also omitted.
 	BuildArgs map[string]string
+	// ResolveFromDigests controls whether FROM image digests are resolved from
+	// the registry and included in the hash. When true, each FROM image is
+	// queried for its current digest; this makes the hash sensitive to image
+	// content, not just the tag. Defaults to false to preserve backward compat.
+	ResolveFromDigests bool
+	// Transport is the HTTP transport used when resolving FROM image digests.
+	// When nil, remote.DefaultTransport is used. A custom transport can be
+	// injected here to route requests through registry mirrors (see the
+	// registrymirrors package).
+	Transport http.RoundTripper
 }
 
 // Compute parses the Dockerfile at opts.DockerfilePath, walks the referenced
@@ -39,6 +53,7 @@ type Options struct {
 //   - the normalised Dockerfile content
 //   - the names and values of all supplied build arguments (sorted)
 //   - the path and content of every file referenced by COPY/ADD instructions
+//   - when ResolveFromDigests is true: the canonical digest of each FROM image
 func Compute(opts Options) (string, error) {
 	pr, err := dockerfile.ParseFile(opts.DockerfilePath)
 	if err != nil {
@@ -57,13 +72,13 @@ func Compute(opts Options) (string, error) {
 	argNames := make([]string, 0, len(pr.BuildArgNames))
 	argNames = append(argNames, pr.BuildArgNames...)
 	sort.Strings(argNames)
-	for _, name := range argNames {
-		val, ok := opts.BuildArgs[name]
+	for _, argName := range argNames {
+		val, ok := opts.BuildArgs[argName]
 		if !ok {
 			// Not provided by the caller — omit from hash.
 			continue
 		}
-		_, _ = fmt.Fprintf(h, "%d:%s=%d:%s\n", len(name), name, len(val), val)
+		_, _ = fmt.Fprintf(h, "%d:%s=%d:%s\n", len(argName), argName, len(val), val)
 	}
 
 	// 3. Hash the build-context files referenced by COPY/ADD.
@@ -84,7 +99,48 @@ func Compute(opts Options) (string, error) {
 		}
 	}
 
+	// 4. Optionally resolve and hash FROM image digests.
+	if opts.ResolveFromDigests && len(pr.FromImages) > 0 {
+		writeSection(h, "from-digests")
+		transport := opts.Transport
+		if transport == nil {
+			transport = remote.DefaultTransport
+		}
+		// Resolve each image in the order they appear in the Dockerfile.
+		for _, img := range pr.FromImages {
+			digest, err := resolveDigest(img, transport)
+			if err != nil {
+				return "", fmt.Errorf("resolve digest for %s: %w", img, err)
+			}
+			// Use the canonical reference (normalised by go-containerregistry) so
+			// that "golang:1.25" and "docker.io/library/golang:1.25" hash the same.
+			ref, _ := name.ParseReference(img)
+			canonical := img
+			if ref != nil {
+				canonical = ref.Name()
+			}
+			_, _ = fmt.Fprintf(h, "%d:%s=%s\n", len(canonical), canonical, digest)
+		}
+	}
+
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// resolveDigest fetches the manifest digest for ref using the supplied
+// transport and the default Docker credential keychain.
+func resolveDigest(ref string, transport http.RoundTripper) (string, error) {
+	r, err := name.ParseReference(ref)
+	if err != nil {
+		return "", fmt.Errorf("parse reference %q: %w", ref, err)
+	}
+	desc, err := remote.Head(r,
+		remote.WithTransport(transport),
+		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+	)
+	if err != nil {
+		return "", fmt.Errorf("fetch manifest head for %q: %w", ref, err)
+	}
+	return desc.Digest.String(), nil
 }
 
 // writeSection writes a labelled separator into h so that different sections

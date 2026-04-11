@@ -124,10 +124,13 @@ The optional `export-env-name` is an additional convenience that mirrors the sam
 docker-hash [flags]
 
 Flags:
-  -f, --file      <path>         Path to the Dockerfile  (default: Dockerfile)
-  -c, --context   <dir>          Build context directory (default: .)
-      --build-arg <NAME=VALUE>   Build argument; may be repeated
-  -v, --version                  Print version information and exit
+  -f, --file            <path>         Path to the Dockerfile  (default: Dockerfile)
+  -c, --context         <dir>          Build context directory (default: .)
+      --build-arg       <NAME=VALUE>   Build argument; may be repeated
+      --no-resolve-from               Disable FROM image digest resolution (skip registry calls)
+      --certs-d         <dir>          Path to a containerd-style certs.d directory for registry mirrors
+                                       (overrides auto-discovery; see "Behind a corporate registry mirror?" below)
+  -v, --version                        Print version information and exit
 ```
 
 ### Examples
@@ -141,6 +144,12 @@ docker-hash -f path/to/Dockerfile -c path/to/context
 
 # Pass build arguments.
 docker-hash --build-arg VERSION=1.2.3 --build-arg ENV=prod
+
+# Skip registry calls (no FROM digest resolution).
+docker-hash --no-resolve-from
+
+# Use a specific certs.d directory for registry mirrors.
+docker-hash --certs-d /etc/containerd/certs.d
 ```
 
 The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
@@ -168,12 +177,15 @@ go build \
 
 ## How it works
 
-1. The Dockerfile is parsed to extract `COPY`/`ADD` source paths and `ARG` declarations.
+1. The Dockerfile is parsed to extract `COPY`/`ADD` source paths, `ARG` declarations, and `FROM` image references.
 2. For each `COPY`/`ADD` that references the **build context** (i.e. without `--from=<stage>`), all matching files are collected and their contents are hashed.
    If a `.dockerignore` file is present in the context root, it is applied before collecting files — matching the behaviour of `docker build`.
 3. Only build arguments that are **declared** with `ARG` in the Dockerfile **and** explicitly supplied via `--build-arg` are included in the hash.
    Undeclared `--build-arg` values and declared args with no supplied value are both ignored.
-4. All contributions are combined with labelled section separators and a per-file SHA-256 sub-hash into a final SHA-256 digest.
+4. Each `FROM` image is resolved to its current registry digest (e.g. `sha256:abc123…`).
+   This means the hash changes automatically when an upstream image is updated, even if the tag stays the same.
+   Use `--no-resolve-from` to skip this step (e.g. in air-gapped environments or when registry calls are undesirable).
+5. All contributions are combined with labelled section separators and a per-file SHA-256 sub-hash into a final SHA-256 digest.
 
 ### Known limitations
 
@@ -188,13 +200,96 @@ go build \
 
 ---
 
+## Behind a corporate registry mirror?
+
+Users in corporate environments that route Docker traffic through a private registry mirror (Artifactory, Harbor, ECR pull-through cache, etc.) can configure `docker-hash` to use those mirrors via the standard [containerd `hosts.toml` format](https://github.com/containerd/containerd/blob/main/docs/hosts.md).
+
+### File layout
+
+Create a `hosts.toml` file for each registry you want to mirror.
+The directory structure matches containerd's:
+
+```text
+<certs-d>/<upstream-registry>/hosts.toml
+```
+
+For example, to mirror `docker.io` through `artifactory.corp/dockerhub`:
+
+```text
+~/.config/containerd/certs.d/docker.io/hosts.toml
+```
+
+```toml
+server = "https://registry-1.docker.io"
+
+[host."https://artifactory.corp/dockerhub"]
+  capabilities = ["pull", "resolve"]
+```
+
+Only hosts that include `"resolve"` in their `capabilities` list are used for digest resolution.
+
+### Auto-discovery
+
+`docker-hash` searches for a `certs.d` directory in this order (first existing directory wins):
+
+1. `$DOCKER_HASH_CERTS_D`
+2. `$XDG_CONFIG_HOME/containerd/certs.d`
+3. `~/.config/containerd/certs.d`
+4. `/etc/containerd/certs.d`
+
+If the node already runs `containerd` or `nerdctl`, `docker-hash` will automatically pick up the same mirror configuration — no duplication needed.
+
+### CLI override
+
+Use `--certs-d=<path>` to point at a specific directory, bypassing auto-discovery entirely:
+
+```sh
+docker-hash --certs-d /etc/containerd/certs.d
+```
+
+This is especially useful in CI runners where the mirrors are at a non-default path.
+
+### Hash stability
+
+The **mirror is invisible to the hash output**.
+A `FROM golang:1.25` resolved via `artifactory.corp/dockerhub` produces the **same hash** as one resolved directly from Docker Hub — provided the image content is the same.
+This ensures that CI runners with different mirror configurations produce identical hashes for the same Dockerfile and image content, which is the whole point of a deterministic hash.
+
+### TLS / skip_verify
+
+Adding `skip_verify = true` to a `[host."..."]` block disables TLS certificate verification for that mirror:
+
+```toml
+[host."https://insecure-mirror.corp"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+```
+
+A `WARN` line is printed to stderr when `skip_verify` is active so the setting is always visible.
+
+### Auth
+
+Credentials for both the upstream registry and mirrors are read from `$HOME/.docker/config.json` (or the path in `$DOCKER_CONFIG`) via the standard Docker credential store.
+`hosts.toml` itself never contains credentials — this matches containerd's design.
+
+### Multiple mirrors / fallback
+
+If multiple `[host."..."]` blocks are present, `docker-hash` tries them in the order they appear in the file.
+When a mirror fails (connection error or HTTP 5xx), the next mirror is tried.
+If all mirrors fail, `docker-hash` falls back to the upstream registry.
+A `WARN` line is printed to stderr for each skipped mirror.
+If the upstream also fails, `docker-hash` exits with an error — use `--no-resolve-from` as the escape hatch.
+
+---
+
 ## Project layout
 
 ```text
 .
-├── cmd/docker-hash/   # CLI entry point
-├── pkg/dockerfile/    # Dockerfile parser helpers
-└── pkg/hasher/        # Core hash computation
+├── cmd/docker-hash/          # CLI entry point
+├── pkg/dockerfile/           # Dockerfile parser helpers
+├── pkg/hasher/               # Core hash computation (includes FROM digest resolution)
+└── pkg/registrymirrors/      # containerd hosts.toml parser and mirror transport
 ```
 
 ---

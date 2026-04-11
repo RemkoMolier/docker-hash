@@ -7,11 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
+	"github.com/RemkoMolier/docker-hash/pkg/registrymirrors"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
 // Build-time variables injected via -ldflags.
@@ -38,6 +41,8 @@ func main() {
 		contextDir     string
 		rawBuildArgs   buildArgList
 		showVersion    bool
+		noResolveFrom  bool
+		certsD         string
 	)
 
 	flag.StringVar(&dockerfilePath, "file", "Dockerfile", "Path to the Dockerfile")
@@ -47,6 +52,8 @@ func main() {
 	flag.Var(&rawBuildArgs, "build-arg", "Build argument in NAME=VALUE format (may be repeated)")
 	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
 	flag.BoolVar(&showVersion, "v", false, "Print version information and exit (short)")
+	flag.BoolVar(&noResolveFrom, "no-resolve-from", false, "Disable FROM image digest resolution (skip registry calls)")
+	flag.StringVar(&certsD, "certs-d", "", "Path to containerd-style certs.d directory for registry mirrors (overrides auto-discovery)")
 	flag.Parse()
 
 	if showVersion {
@@ -65,10 +72,19 @@ func main() {
 
 	buildArgs := parseBuildArgs(rawBuildArgs)
 
+	// Set up the registry transport with mirror support.
+	transport, err := buildTransport(certsD)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: load registry mirrors: %v\n", err)
+		os.Exit(1)
+	}
+
 	hash, err := hasher.Compute(hasher.Options{
-		DockerfilePath: dockerfilePath,
-		ContextDir:     contextDir,
-		BuildArgs:      buildArgs,
+		DockerfilePath:     dockerfilePath,
+		ContextDir:         contextDir,
+		BuildArgs:          buildArgs,
+		ResolveFromDigests: !noResolveFrom,
+		Transport:          transport,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -76,6 +92,28 @@ func main() {
 	}
 
 	fmt.Println(hash)
+}
+
+// buildTransport loads the registry mirror configuration and returns an
+// http.RoundTripper that routes requests through any configured mirrors.
+// When certsD is empty, auto-discovery is used. When no certs.d directory
+// exists, remote.DefaultTransport is returned unchanged.
+func buildTransport(certsD string) (http.RoundTripper, error) {
+	dir := certsD
+	if dir == "" {
+		discovered, err := registrymirrors.Discover()
+		if err != nil {
+			return nil, fmt.Errorf("discover certs.d: %w", err)
+		}
+		dir = discovered
+	}
+
+	mirrors, err := registrymirrors.Load(dir)
+	if err != nil {
+		return nil, fmt.Errorf("load mirrors from %s: %w", dir, err)
+	}
+
+	return mirrors.Transport(remote.DefaultTransport), nil
 }
 
 // printVersion writes the version banner to w. Extracted so it can be unit-tested

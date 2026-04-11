@@ -98,6 +98,17 @@ func TestParse_MultistageDockerfile(t *testing.T) {
 	if len(pr.BuildArgNames) != 1 || pr.BuildArgNames[0] != "APP_VERSION" {
 		t.Errorf("BuildArgNames: got %v, want [APP_VERSION]", pr.BuildArgNames)
 	}
+
+	// FromImages: "builder" is a local stage and must not appear; both real images must.
+	wantImages := []string{"golang:1.21", "ubuntu:22.04"}
+	if len(pr.FromImages) != len(wantImages) {
+		t.Fatalf("FromImages length: got %d, want %d (%v)", len(pr.FromImages), len(wantImages), pr.FromImages)
+	}
+	for i, w := range wantImages {
+		if pr.FromImages[i] != w {
+			t.Errorf("FromImages[%d]: got %q, want %q", i, pr.FromImages[i], w)
+		}
+	}
 }
 
 func TestParse_EmptyDockerfile(t *testing.T) {
@@ -110,5 +121,69 @@ func TestParse_EmptyDockerfile(t *testing.T) {
 	}
 	if len(pr.BuildArgNames) != 0 {
 		t.Errorf("expected no build args, got %d", len(pr.BuildArgNames))
+	}
+	// "scratch" must not appear in FromImages.
+	if len(pr.FromImages) != 0 {
+		t.Errorf("expected no FromImages for scratch-only Dockerfile, got %v", pr.FromImages)
+	}
+}
+
+func TestParse_FromImages_Simple(t *testing.T) {
+	df := "FROM ubuntu:22.04\nRUN echo hello\n"
+	pr, err := dockerfile.Parse(strings.NewReader(df))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.FromImages) != 1 || pr.FromImages[0] != "ubuntu:22.04" {
+		t.Errorf("FromImages: got %v, want [ubuntu:22.04]", pr.FromImages)
+	}
+}
+
+func TestParse_FromImages_Multistage(t *testing.T) {
+	// Local stage references must be excluded; only real image names remain.
+	df := `FROM golang:1.21 AS builder
+RUN go build
+FROM ubuntu:22.04
+COPY --from=builder /bin/app /app
+`
+	pr, err := dockerfile.Parse(strings.NewReader(df))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// "builder" is a local stage — must not appear.
+	want := []string{"golang:1.21", "ubuntu:22.04"}
+	if len(pr.FromImages) != len(want) {
+		t.Fatalf("FromImages length: got %d, want %d (%v)", len(pr.FromImages), len(want), pr.FromImages)
+	}
+	for i, w := range want {
+		if pr.FromImages[i] != w {
+			t.Errorf("FromImages[%d]: got %q, want %q", i, pr.FromImages[i], w)
+		}
+	}
+}
+
+func TestParse_FromImages_ScratchExcluded(t *testing.T) {
+	df := "FROM scratch\nCOPY bin /bin\n"
+	pr, err := dockerfile.Parse(strings.NewReader(df))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(pr.FromImages) != 0 {
+		t.Errorf("FromImages: expected empty, got %v", pr.FromImages)
+	}
+}
+
+func TestParse_FromImages_StageReferenceExcluded(t *testing.T) {
+	// "builder" is a local stage name; the second FROM references it.
+	df := `FROM alpine:3.19 AS builder
+FROM builder AS final
+`
+	pr, err := dockerfile.Parse(strings.NewReader(df))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Only "alpine:3.19" should appear; "builder" is a local stage.
+	if len(pr.FromImages) != 1 || pr.FromImages[0] != "alpine:3.19" {
+		t.Errorf("FromImages: got %v, want [alpine:3.19]", pr.FromImages)
 	}
 }

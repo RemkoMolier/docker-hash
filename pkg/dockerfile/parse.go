@@ -32,6 +32,10 @@ type ParseResult struct {
 	CopySources []CopySource
 	// BuildArgNames are the unique names of ARG instructions found in the Dockerfile.
 	BuildArgNames []string
+	// FromImages contains the image references from all FROM instructions that
+	// reference an external registry image (not a local build stage and not
+	// "scratch"). These can be used to resolve digests for deterministic hashing.
+	FromImages []string
 }
 
 // ParseFile opens and parses a Dockerfile at the given path.
@@ -61,9 +65,24 @@ func Parse(r io.Reader) (*ParseResult, error) {
 	}
 
 	seenArgs := make(map[string]struct{})
+	// stageNames tracks all build-stage names (from AS clauses) so we can
+	// distinguish local stage references from real image references in FROM.
+	stageNames := make(map[string]struct{})
 
 	for _, node := range result.AST.Children {
 		switch strings.ToLower(node.Value) {
+		case command.From:
+			if node.Next != nil {
+				image := node.Next.Value
+				// Check for AS <stage> to record stage names.
+				if node.Next.Next != nil && strings.ToLower(node.Next.Next.Value) == "as" && node.Next.Next.Next != nil {
+					stageNames[strings.ToLower(node.Next.Next.Next.Value)] = struct{}{}
+				}
+				// Skip scratch; local stage references are filtered below.
+				if strings.ToLower(image) != "scratch" {
+					pr.FromImages = append(pr.FromImages, image)
+				}
+			}
 		case command.Copy, command.Add:
 			cs := parseCopyNode(node)
 			pr.CopySources = append(pr.CopySources, cs)
@@ -71,18 +90,27 @@ func Parse(r io.Reader) (*ParseResult, error) {
 			if node.Next != nil {
 				// ARG name or ARG name=default — extract just the name
 				argExpr := node.Next.Value
-				name := argExpr
+				argName := argExpr
 				if idx := strings.Index(argExpr, "="); idx >= 0 {
-					name = argExpr[:idx]
+					argName = argExpr[:idx]
 				}
 				// Deduplicate: the same ARG name can appear in multiple stages.
-				if _, ok := seenArgs[name]; !ok {
-					seenArgs[name] = struct{}{}
-					pr.BuildArgNames = append(pr.BuildArgNames, name)
+				if _, ok := seenArgs[argName]; !ok {
+					seenArgs[argName] = struct{}{}
+					pr.BuildArgNames = append(pr.BuildArgNames, argName)
 				}
 			}
 		}
 	}
+
+	// Remove FROM images that are actually local stage references.
+	filtered := make([]string, 0, len(pr.FromImages))
+	for _, img := range pr.FromImages {
+		if _, isStage := stageNames[strings.ToLower(img)]; !isStage {
+			filtered = append(filtered, img)
+		}
+	}
+	pr.FromImages = filtered
 
 	return pr, nil
 }

@@ -1,6 +1,9 @@
 package hasher_test
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -671,5 +674,175 @@ func TestCompute_DockerIgnore_DirectoryPattern(t *testing.T) {
 	}
 	if h1 != h2 {
 		t.Error("modifying a file inside an ignored directory (node_modules/) should not change the hash")
+	}
+}
+
+// --- FROM digest resolution tests ---
+
+// mockManifest is a minimal manifest body returned by mock registry servers.
+const mockManifest = `{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"mediaType":"application/vnd.docker.container.image.v1+json","size":1,"digest":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"layers":[]}`
+
+// newMockRegistryHandler returns an http.Handler that serves minimal OCI
+// manifest responses (HEAD and GET) with the given digest.
+func newMockRegistryHandler(digest string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.Header().Set("Docker-Content-Digest", digest)
+		// Content-Length is required by go-containerregistry's headManifest.
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(mockManifest)))
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			fmt.Fprint(w, mockManifest)
+		}
+	})
+}
+
+// hostRewriteRoundTripper redirects requests for registryHost to serverURL.
+type hostRewriteRoundTripper struct {
+	registryHost string
+	serverURL    string
+}
+
+func (t *hostRewriteRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() == t.registryHost {
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = t.serverURL[len("http://"):]
+		clone.Host = clone.URL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// TestCompute_ResolveFromDigests_DisabledByDefault verifies that without
+// ResolveFromDigests the hash does not change when a FROM image would
+// hypothetically change its digest (backward compat).
+func TestCompute_ResolveFromDigests_DisabledByDefault(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY app.py /app/\n",
+		"app.py":     "print('hello')\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Compute again — should be identical since digest resolution is off.
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute 2nd: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("hash must be deterministic when ResolveFromDigests is false")
+	}
+}
+
+// TestCompute_ResolveFromDigests_DifferentDigestsDifferentHashes verifies that
+// two separate Compute calls with the same Dockerfile but different digests
+// returned by the registry produce different hashes.
+func TestCompute_ResolveFromDigests_DifferentDigestsDifferentHashes(t *testing.T) {
+	digestA := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	serverA := httptest.NewServer(newMockRegistryHandler(digestA))
+	defer serverA.Close()
+
+	digestB := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	serverB := httptest.NewServer(newMockRegistryHandler(digestB))
+	defer serverB.Close()
+
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY app.py /app/\n",
+		"app.py":     "print('hello')\n",
+	})
+
+	optsA := hasher.Options{
+		DockerfilePath:     filepath.Join(dir, "Dockerfile"),
+		ContextDir:         dir,
+		ResolveFromDigests: true,
+		Transport: &hostRewriteRoundTripper{
+			registryHost: "index.docker.io",
+			serverURL:    serverA.URL,
+		},
+	}
+	optsB := hasher.Options{
+		DockerfilePath:     filepath.Join(dir, "Dockerfile"),
+		ContextDir:         dir,
+		ResolveFromDigests: true,
+		Transport: &hostRewriteRoundTripper{
+			registryHost: "index.docker.io",
+			serverURL:    serverB.URL,
+		},
+	}
+
+	hA, err := hasher.Compute(optsA)
+	if err != nil {
+		t.Fatalf("Compute with digest A: %v", err)
+	}
+	hB, err := hasher.Compute(optsB)
+	if err != nil {
+		t.Fatalf("Compute with digest B: %v", err)
+	}
+	if hA == hB {
+		t.Error("different FROM digests must produce different hashes")
+	}
+}
+
+// TestCompute_ResolveFromDigests_MirrorInvisibleToHash verifies acceptance
+// criterion 2: the hash produced via a mirror is identical to the hash
+// produced when the "upstream" returns the same digest directly.
+// This is the canonical mirror-invisibility test.
+func TestCompute_ResolveFromDigests_MirrorInvisibleToHash(t *testing.T) {
+	const digest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	// Both "upstream" and "mirror" return the same digest.
+	handler := newMockRegistryHandler(digest)
+	upstreamServer := httptest.NewServer(handler)
+	defer upstreamServer.Close()
+	mirrorServer := httptest.NewServer(handler)
+	defer mirrorServer.Close()
+
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY app.py /app/\n",
+		"app.py":     "print('hello')\n",
+	})
+
+	// Direct (no mirror): transport routes index.docker.io → upstreamServer.
+	optsNoMirror := hasher.Options{
+		DockerfilePath:     filepath.Join(dir, "Dockerfile"),
+		ContextDir:         dir,
+		ResolveFromDigests: true,
+		Transport: &hostRewriteRoundTripper{
+			registryHost: "index.docker.io",
+			serverURL:    upstreamServer.URL,
+		},
+	}
+
+	// With mirror: transport routes index.docker.io → mirrorServer.
+	optsMirror := hasher.Options{
+		DockerfilePath:     filepath.Join(dir, "Dockerfile"),
+		ContextDir:         dir,
+		ResolveFromDigests: true,
+		Transport: &hostRewriteRoundTripper{
+			registryHost: "index.docker.io",
+			serverURL:    mirrorServer.URL,
+		},
+	}
+
+	hDirect, err := hasher.Compute(optsNoMirror)
+	if err != nil {
+		t.Fatalf("Compute (direct): %v", err)
+	}
+	hMirror, err := hasher.Compute(optsMirror)
+	if err != nil {
+		t.Fatalf("Compute (mirror): %v", err)
+	}
+
+	if hDirect != hMirror {
+		t.Errorf("mirror must be invisible to the hash: direct=%s mirror=%s", hDirect, hMirror)
 	}
 }
