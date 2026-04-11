@@ -83,14 +83,17 @@ With one sentence per line, only the modified sentence appears in the diff, so r
 The `markdown-lint` job in [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `markdownlint-cli2` against `**/*.md` with the [`markdownlint-rule-max-one-sentence-per-line`](https://github.com/aepfli/markdownlint-rule-max-one-sentence-per-line) custom rule.
 The job will fail your PR if a line contains more than one sentence.
 
-To run the same check locally before pushing:
+To run the same check locally before pushing, install into a temporary directory so no Node tooling lands in the repo checkout:
 
 ```sh
-npm init -y >/dev/null
-npm install --no-save \
-  markdownlint-cli2@0.22.0 \
-  markdownlint-rule-max-one-sentence-per-line@0.0.2
-npx markdownlint-cli2 "**/*.md"
+PREFIX=$(mktemp -d)
+(cd "$PREFIX" && npm init -y >/dev/null && \
+  npm install --no-save --ignore-scripts \
+    markdownlint-cli2@0.22.0 \
+    markdownlint-rule-max-one-sentence-per-line@0.0.2)
+NODE_PATH="$PREFIX/node_modules" \
+  npx --prefix "$PREFIX" markdownlint-cli2 "**/*.md"
 ```
 
 The pinned versions match what CI uses; see [.markdownlint-cli2.yaml](.markdownlint-cli2.yaml) for the rule configuration.
+Most editors with a markdownlint integration will also pick up the same rule set automatically (the `MD013: false` and `customRules` settings live in `.markdownlint-cli2.yaml`).

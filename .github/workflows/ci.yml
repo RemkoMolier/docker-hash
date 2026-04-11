@@ -96,14 +96,24 @@ jobs:
         with:
           node-version: "22"
       - name: Install markdownlint-cli2 + custom rules
-        # Pinned versions match what `.markdownlint-cli2.yaml` expects.
-        # `--no-save` plus a transient `npm init` keeps Node tooling out of
-        # the committed Go repo: nothing is added to the working tree.
-        # Renovate can manage these via a custom regex manager if desired.
+        # Install into a tmp prefix outside the repo checkout so no Node
+        # tooling files (package.json, package-lock.json, node_modules/)
+        # ever land in the working tree. --ignore-scripts blocks third-
+        # party install hooks for supply-chain hardening.
+        # Renovate can manage these pinned versions via a custom regex
+        # manager if desired.
         run: |
+          PREFIX=$(mktemp -d /tmp/mdlint.XXXXXX)
+          echo "MDLINT_PREFIX=$PREFIX" >> "$GITHUB_ENV"
+          cd "$PREFIX"
           npm init -y >/dev/null
-          npm install --no-save --silent \
+          npm install --no-save --silent --ignore-scripts \
             markdownlint-cli2@0.22.0 \
             markdownlint-rule-max-one-sentence-per-line@0.0.2
       - name: Run markdownlint
-        run: npx markdownlint-cli2 "**/*.md"
+        # Run from the repo root so .markdownlint-cli2.yaml and the
+        # **/*.md glob resolve relative to the checkout. NODE_PATH lets
+        # the cli2 process require() the custom rule from the tmp prefix.
+        run: |
+          NODE_PATH="$MDLINT_PREFIX/node_modules" \
+            npx --prefix "$MDLINT_PREFIX" markdownlint-cli2 "**/*.md"
