@@ -34,13 +34,18 @@ type Options struct {
 }
 
 // contextEntry represents a single entry collected from a COPY/ADD source.
-// Regular files have an empty symlinkTarget. Inner symlinks (found while
-// walking a copied directory) have a non-empty symlinkTarget holding the raw
+// Regular files have isSymlink == false. Inner symlinks (found while walking
+// a copied directory) have isSymlink == true and symlinkTarget set to the raw
 // string returned by os.Readlink; they are hashed by that target string only,
-// not by the content the link resolves to.
+// not by the content the link resolves to. isSymlink is the discriminator
+// (rather than `symlinkTarget != ""`) so that a symlink whose target is the
+// empty string — legal on some POSIX systems though not creatable on Linux —
+// is still classified as a symlink and hashed as such, rather than being
+// passed to hashFile and silently following the link via os.Open.
 type contextEntry struct {
 	relPath       string
-	symlinkTarget string // non-empty only for inner symlinks
+	symlinkTarget string // raw os.Readlink result; only meaningful when isSymlink
+	isSymlink     bool
 }
 
 // Compute parses the Dockerfile at opts.DockerfilePath, walks the referenced
@@ -92,7 +97,7 @@ func Compute(opts Options) (string, error) {
 	})
 
 	for _, entry := range contextEntries {
-		if entry.symlinkTarget != "" {
+		if entry.isSymlink {
 			if err := hashSymlink(h, entry.relPath, entry.symlinkTarget); err != nil {
 				return "", fmt.Errorf("hash symlink %s: %w", entry.relPath, err)
 			}
@@ -452,7 +457,7 @@ func walkDirEntries(absContext, absDir string, pm, excludePM *patternmatcher.Pat
 			if readErr != nil {
 				return readErr
 			}
-			entries = append(entries, contextEntry{relPath: fileRel, symlinkTarget: target})
+			entries = append(entries, contextEntry{relPath: fileRel, symlinkTarget: target, isSymlink: true})
 			return nil
 		}
 		// Regular file.
