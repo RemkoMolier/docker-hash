@@ -121,6 +121,21 @@ This catches the most common upstream regression pattern (a freshly-published pa
 `main` has branch protection enabled with `strict: true`, which means a Renovate PR cannot merge until its branch has been rebased onto current `main` and CI has re-run successfully on that rebased commit.
 This prevents the broken-main cascade scenario where a stale PR gets merged on top of a broken base.
 
+### GitHub Actions are SHA-pinned
+
+Every `uses:` reference in `.github/workflows/` must point at a full 40-character commit SHA, not a moving tag like `@v6` or `@main`.
+The readable upstream version goes in a trailing comment so reviewers can still see at a glance which release the SHA corresponds to:
+
+```yaml
+- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+```
+
+This is enforced by a `pinDigests: true` rule on the `github-actions` manager in [renovate.json](renovate.json).
+Renovate opens pinning PRs for any unpinned `uses:` line and keeps the SHAs current as new releases ship, preserving the trailing version comment.
+The reason for the policy is supply-chain hardening: a tag like `actions/checkout@v6` is mutable and can be repointed at a different commit by the action's maintainers (or anyone who compromises them), so pinning by SHA is the only way to guarantee the workflow runs the code that was reviewed.
+
+When adding a new action to a workflow, resolve the tag to a SHA up front rather than relying on Renovate to clean it up after merge.
+
 ### Triggering Renovate manually
 
 Tick the "Check this box to trigger a request for Renovate to run again on this repository" checkbox in the [Dependency Dashboard issue](../../issues/21) if you want Renovate to re-scan immediately rather than waiting for its next scheduled run.
