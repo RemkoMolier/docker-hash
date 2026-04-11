@@ -218,9 +218,6 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 		return nil, fmt.Errorf("COPY/ADD source %q matches no files in build context", pattern)
 	}
 
-	canPruneIgnoredDirs := pm == nil || !pm.Exclusions()
-	canPruneExcludedDirs := excludePM == nil || !excludePM.Exclusions()
-
 	var files []string
 	var anyIgnored bool
 	for _, abs := range matches {
@@ -239,10 +236,12 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 			continue
 		}
 		if info.IsDir() {
-			// canPruneIgnoredDirs is constant for the duration of the walk:
-			// we can only skip an entire subtree when no negation patterns
-			// exist in the matcher (e.g. "subdir" + "!subdir/keep.txt"
-			// requires descending into subdir and filtering file-by-file).
+			// canPruneIgnoredDirs is only false when negation patterns exist
+			// in the matcher (e.g. "subdir" + "!subdir/keep.txt" requires
+			// descending into subdir and filtering file-by-file).
+			canPruneIgnoredDirs := pm == nil || !pm.Exclusions()
+			// canPruneExcludedDirs applies the same logic for --exclude patterns.
+			canPruneExcludedDirs := excludePM == nil || !excludePM.Exclusions()
 
 			// Walk the directory and collect all regular files.
 			err = filepath.WalkDir(abs, func(path string, d fs.DirEntry, err error) error {

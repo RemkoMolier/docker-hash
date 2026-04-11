@@ -954,6 +954,7 @@ func TestCompute_CopyExclude_MultipleExcludes(t *testing.T) {
 	}
 
 	// Modifying cache.tmp (excluded by *.tmp) must NOT change the hash.
+	// First reset build.log to its original value to isolate this sub-test.
 	if err := os.WriteFile(filepath.Join(dir, "build.log"), []byte("log\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile reset build.log: %v", err)
 	}
