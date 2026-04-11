@@ -544,6 +544,20 @@ func TestCompute_DockerIgnore_SelfIgnore(t *testing.T) {
 	if h1 != h2 {
 		t.Error("a self-ignoring .dockerignore should not affect the hash when it changes")
 	}
+
+	// Changing app.py MUST change the hash — this asserts that the walk root
+	// "." (fileRel when abs == absContext) is never filtered by
+	// MatchesOrParentMatches, so the context files are still reachable.
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('changed')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile app.py: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after app.py change: %v", err)
+	}
+	if h1 == h3 {
+		t.Error("changing app.py should change the hash (walk root '.' must not be filtered)")
+	}
 }
 
 func TestCompute_DockerIgnore_PathTraversalStillErrors(t *testing.T) {
