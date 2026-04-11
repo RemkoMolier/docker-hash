@@ -19,6 +19,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run tests
+        shell: bash
         run: go test ./... -race -count=1 -json | tee /tmp/test-output.json; exit ${PIPESTATUS[0]}
       - name: Upload test output
         if: always()
