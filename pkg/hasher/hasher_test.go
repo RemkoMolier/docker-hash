@@ -813,3 +813,191 @@ func TestCompute_DockerIgnorePartialExclusionStillWorks(t *testing.T) {
 		t.Error("changing a non-ignored file should change the hash")
 	}
 }
+
+func TestCompute_CopyExclude_BasicGlob(t *testing.T) {
+	// COPY --exclude=*.log . /app/ must ignore log files.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY --exclude=*.log . /app/\n",
+		"app.py":     "print('hello')\n",
+		"build.log":  "some log output\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Modifying the excluded log file must NOT change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "build.log"), []byte("different log\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile build.log: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after log change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("modifying an --exclude'd file (build.log) should not change the hash")
+	}
+
+	// Modifying the non-excluded .py file MUST change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('changed')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile app.py: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after py change: %v", err)
+	}
+	if h1 == h3 {
+		t.Error("modifying a non-excluded file (app.py) should change the hash")
+	}
+}
+
+func TestCompute_CopyExclude_SourceRelativeMatching(t *testing.T) {
+	// COPY --exclude=*.log src/ /app/ — pattern is relative to src/, not the context root.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":  "FROM ubuntu:22.04\nCOPY --exclude=*.log src/ /app/\n",
+		"src/foo.log": "log inside src\n",
+		"src/foo.py":  "src python\n",
+		"other.log":   "log outside src\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Modifying src/foo.log (inside src/, excluded) must NOT change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "src", "foo.log"), []byte("changed log\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile src/foo.log: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after src/foo.log change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("modifying an --exclude'd file inside src/ should not change the hash")
+	}
+
+	// Modifying src/foo.py (inside src/, NOT excluded) MUST change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "src", "foo.py"), []byte("changed python\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile src/foo.py: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after src/foo.py change: %v", err)
+	}
+	if h1 == h3 {
+		t.Error("modifying a non-excluded file inside src/ should change the hash")
+	}
+
+	// other.log is outside src/ — the COPY only covers src/, so it is not
+	// part of the hash at all. Confirm its exclusion from the COPY is correct
+	// (the per-source exclude does not affect files outside src/).
+	if err := os.WriteFile(filepath.Join(dir, "src", "foo.py"), []byte("src python\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile reset src/foo.py: %v", err)
+	}
+	h4, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after reset: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.log"), []byte("changed outside log\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile other.log: %v", err)
+	}
+	h5, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after other.log change: %v", err)
+	}
+	if h4 != h5 {
+		t.Error("changing other.log outside src/ should not affect the hash (COPY only covers src/)")
+	}
+}
+
+func TestCompute_CopyExclude_MultipleExcludes(t *testing.T) {
+	// COPY --exclude=*.log --exclude=*.tmp . /app/ — both patterns are honored.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY --exclude=*.log --exclude=*.tmp . /app/\n",
+		"app.py":     "print('hello')\n",
+		"build.log":  "log\n",
+		"cache.tmp":  "tmp\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Modifying build.log (excluded by *.log) must NOT change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "build.log"), []byte("changed log\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile build.log: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after log change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("modifying build.log (excluded by *.log) should not change the hash")
+	}
+
+	// Modifying cache.tmp (excluded by *.tmp) must NOT change the hash.
+	// First reset build.log to its original value to isolate this sub-test.
+	if err := os.WriteFile(filepath.Join(dir, "build.log"), []byte("log\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile reset build.log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cache.tmp"), []byte("changed tmp\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile cache.tmp: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after tmp change: %v", err)
+	}
+	if h1 != h3 {
+		t.Error("modifying cache.tmp (excluded by *.tmp) should not change the hash")
+	}
+
+	// Modifying app.py (not excluded) MUST change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "cache.tmp"), []byte("tmp\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile reset cache.tmp: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('changed')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile app.py: %v", err)
+	}
+	h4, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after py change: %v", err)
+	}
+	if h1 == h4 {
+		t.Error("modifying app.py (not excluded) should change the hash")
+	}
+}
+
+func TestCompute_CopyExclude_AllFilesExcludedErrors(t *testing.T) {
+	// COPY --exclude=* . /app/ against a non-empty context should return an
+	// error because all files are excluded and zero files remain.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY --exclude=* . /app/\n",
+		"app.py":     "print('hello')\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Error("expected an error when --exclude=* excludes all files, got nil")
+	}
+}

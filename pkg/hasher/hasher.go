@@ -109,8 +109,18 @@ func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]
 		if src.Stage != "" {
 			continue
 		}
+
+		// Build a per-source PatternMatcher from --exclude= flags, if any.
+		var excludePM *patternmatcher.PatternMatcher
+		if len(src.Excludes) > 0 {
+			excludePM, err = patternmatcher.New(src.Excludes)
+			if err != nil {
+				return nil, fmt.Errorf("build --exclude patterns: %w", err)
+			}
+		}
+
 		for _, pattern := range src.Paths {
-			matched, err := resolvePattern(contextDir, pattern, pm)
+			matched, err := resolvePattern(contextDir, pattern, pm, excludePM)
 			if err != nil {
 				return nil, err
 			}
@@ -164,8 +174,10 @@ func isIgnored(pm *patternmatcher.PatternMatcher, fileRel string) (bool, error) 
 // are returned; symlinks and special files are skipped. All resolved paths are
 // verified to remain within contextDir (path traversal guard). Files that match
 // the supplied .dockerignore pattern matcher (pm) are excluded; pass nil for no
-// filtering.
-func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatcher) ([]string, error) {
+// filtering. Files that match the per-source exclude pattern matcher (excludePM)
+// are also excluded; patterns in excludePM are matched against paths relative to
+// the matched source root, following Docker's --exclude semantics.
+func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatcher, excludePM *patternmatcher.PatternMatcher) ([]string, error) {
 	// Short-circuit for URLs — return the URL string as a synthetic entry.
 	if isURL(pattern) {
 		return []string{pattern}, nil
@@ -224,11 +236,12 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 			continue
 		}
 		if info.IsDir() {
-			// canPruneIgnoredDirs is constant for the duration of the walk:
-			// we can only skip an entire subtree when no negation patterns
-			// exist in the matcher (e.g. "subdir" + "!subdir/keep.txt"
-			// requires descending into subdir and filtering file-by-file).
+			// canPruneIgnoredDirs is only false when negation patterns exist
+			// in the matcher (e.g. "subdir" + "!subdir/keep.txt" requires
+			// descending into subdir and filtering file-by-file).
 			canPruneIgnoredDirs := pm == nil || !pm.Exclusions()
+			// canPruneExcludedDirs applies the same logic for --exclude patterns.
+			canPruneExcludedDirs := excludePM == nil || !excludePM.Exclusions()
 
 			// Walk the directory and collect all regular files.
 			err = filepath.WalkDir(abs, func(path string, d fs.DirEntry, err error) error {
@@ -258,6 +271,22 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 					}
 					return nil
 				}
+				// Apply per-source --exclude filtering using path relative to
+				// the matched source root (Docker's --exclude semantics).
+				fileRelToSrc, srcRelErr := filepath.Rel(abs, path)
+				if srcRelErr != nil {
+					return srcRelErr
+				}
+				excluded, excMatchErr := isIgnored(excludePM, fileRelToSrc)
+				if excMatchErr != nil {
+					return excMatchErr
+				}
+				if excluded {
+					if d.IsDir() && canPruneExcludedDirs {
+						return fs.SkipDir
+					}
+					return nil
+				}
 				// Only include regular files; skip symlinks, FIFOs, devices, etc.
 				if !d.Type().IsRegular() {
 					return nil
@@ -283,6 +312,16 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 				anyIgnored = true
 				continue
 			}
+			// Apply per-source --exclude filtering. For a literal file source,
+			// the matching path is the file's base name (path relative to itself).
+			fileRelToSrc := filepath.Base(abs)
+			excluded, excMatchErr := isIgnored(excludePM, fileRelToSrc)
+			if excMatchErr != nil {
+				return nil, excMatchErr
+			}
+			if excluded {
+				continue
+			}
 			files = append(files, fileRel)
 		}
 		// Non-regular, non-directory entries (symlinks, FIFOs, devices) are skipped.
@@ -290,6 +329,12 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 
 	if len(files) == 0 && anyIgnored {
 		return nil, fmt.Errorf("COPY/ADD source %q matches files in the build context, but all of them are excluded by .dockerignore", pattern)
+	}
+	// A COPY/ADD source that resolves to zero files is always an error: Docker
+	// itself rejects such instructions at build time. This also catches the
+	// case where every matched file was filtered out by --exclude patterns.
+	if len(files) == 0 {
+		return nil, fmt.Errorf("COPY/ADD source %q matches no files in build context", pattern)
 	}
 
 	return files, nil
