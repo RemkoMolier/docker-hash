@@ -8,3 +8,12 @@
 
 # Go vendor directory
 /vendor/
+
+# Defensive: the markdown-lint CI job and the documented local workflow
+# install markdownlint-cli2 into a tmp prefix outside the repo, but if
+# anyone runs `npm install` directly in the repo root these would land
+# in the working tree. None of them should ever be committed in this
+# Go repo.
+/node_modules/
+/package.json
+/package-lock.json
