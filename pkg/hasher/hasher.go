@@ -60,7 +60,7 @@ func Compute(opts Options) (string, error) {
 			// Not provided by the caller — omit from hash.
 			continue
 		}
-		fmt.Fprintf(h, "%d:%s=%d:%s\n", len(name), name, len(val), val)
+		_, _ = fmt.Fprintf(h, "%d:%s=%d:%s\n", len(name), name, len(val), val)
 	}
 
 	// 3. Hash the build-context files referenced by COPY/ADD.
@@ -87,7 +87,7 @@ func Compute(opts Options) (string, error) {
 // writeSection writes a labelled separator into h so that different sections
 // of the hash cannot accidentally collide.
 func writeSection(h hash.Hash, label string) {
-	fmt.Fprintf(h, "\x00[%s]\x00", label)
+	_, _ = fmt.Fprintf(h, "\x00[%s]\x00", label)
 }
 
 // collectContextFiles returns the relative paths of all build-context files
@@ -216,7 +216,7 @@ func resolvePattern(contextDir, pattern string) ([]string, error) {
 func hashFile(h hash.Hash, relPath, absPath string) error {
 	if isURL(relPath) {
 		// URLs are hashed by their string value, not by remote content.
-		fmt.Fprintf(h, "url:%d:%s\n", len(relPath), relPath)
+		_, _ = fmt.Fprintf(h, "url:%d:%s\n", len(relPath), relPath)
 		return nil
 	}
 
@@ -224,7 +224,7 @@ func hashFile(h hash.Hash, relPath, absPath string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fh := sha256.New()
 	n, err := io.Copy(fh, f)
@@ -232,7 +232,7 @@ func hashFile(h hash.Hash, relPath, absPath string) error {
 		return err
 	}
 	slashPath := filepath.ToSlash(relPath)
-	fmt.Fprintf(h, "file:%d:%s:%d:%x\n", len(slashPath), slashPath, n, fh.Sum(nil))
+	_, _ = fmt.Fprintf(h, "file:%d:%s:%d:%x\n", len(slashPath), slashPath, n, fh.Sum(nil))
 	return nil
 }
 
