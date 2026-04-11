@@ -203,6 +203,14 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 	if err != nil {
 		return nil, err
 	}
+	// Resolve any symlinks in the context directory path itself so that
+	// filepath.EvalSymlinks on resolved target paths can be compared against
+	// absContext correctly (e.g. /tmp → /private/tmp on macOS, or a
+	// symlinked project checkout).  We fall back to the Abs result if the
+	// directory cannot be resolved (e.g. it does not yet exist).
+	if resolved, resolveErr := filepath.EvalSymlinks(absContext); resolveErr == nil {
+		absContext = resolved
+	}
 
 	// Glob relative to context dir.
 	absPattern := filepath.Join(absContext, filepath.FromSlash(pattern))
@@ -270,6 +278,10 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 					return nil, matchErr
 				}
 				if !ignored {
+					// The entry is keyed by resolvedRel (the target's path,
+					// e.g. "real.txt"), not by the symlink name ("mylink").
+					// This means a separate COPY real.txt /... in the same
+					// Dockerfile deduplicates correctly via the seen map.
 					entries = append(entries, contextEntry{relPath: resolvedRel})
 				}
 			}

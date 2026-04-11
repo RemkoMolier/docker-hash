@@ -739,11 +739,16 @@ func TestCompute_TopLevelSourceSymlink_Relink(t *testing.T) {
 
 func TestCompute_TopLevelSourceSymlink_EscapesContextErrors(t *testing.T) {
 	// COPY mylink /app/ where mylink points outside the context must return an error.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
 	dir := buildTestContext(t, map[string]string{
 		"Dockerfile": "FROM ubuntu:22.04\nCOPY mylink /app/\n",
 	})
-	// Point to /etc/passwd (outside the build context).
-	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "mylink")); err != nil {
+	// Point to a file in a completely separate temp directory (outside the context).
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(dir, "mylink")); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
 
@@ -817,5 +822,58 @@ func TestCompute_InnerSymlink_TargetContentDoesNotMatter(t *testing.T) {
 	}
 	if h1 != h2 {
 		t.Error("changing the content of a file pointed to by an inner symlink (but not separately COPY'd) should not change the hash")
+	}
+}
+
+func TestCompute_TopLevel_ContextViaSymlinkedParent(t *testing.T) {
+	// Regression: when ContextDir itself sits behind a symlinked parent
+	// (e.g. /tmp → /private/tmp on macOS), a top-level source symlink
+	// that resolves to a sibling file inside the same real directory must
+	// NOT be rejected as "escapes build context".
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("MkdirAll real: %v", err)
+	}
+	// Create a symlink "ctx" → "real" so that ContextDir is accessed via a symlinked path.
+	link := filepath.Join(base, "ctx")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("Symlink ctx→real: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(real, "Dockerfile"), []byte("FROM ubuntu:22.04\nCOPY mylink /app/\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Dockerfile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "target.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile target.txt: %v", err)
+	}
+	// mylink → <ctx>/target.txt (an absolute path through the symlinked parent).
+	if err := os.Symlink(filepath.Join(link, "target.txt"), filepath.Join(real, "mylink")); err != nil {
+		t.Fatalf("Symlink mylink: %v", err)
+	}
+
+	// Compute using the symlinked path as ContextDir.
+	h1, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(link, "Dockerfile"),
+		ContextDir:     link,
+	})
+	if err != nil {
+		t.Fatalf("Compute via symlinked context: %v", err)
+	}
+
+	// Changing the target file must change the hash (sanity-check that the
+	// symlink was actually followed and not rejected).
+	if err := os.WriteFile(filepath.Join(real, "target.txt"), []byte("world\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile target.txt change: %v", err)
+	}
+	h2, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(link, "Dockerfile"),
+		ContextDir:     link,
+	})
+	if err != nil {
+		t.Fatalf("Compute via symlinked context after change: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("changing the target file should change the hash even when ContextDir is a symlinked path")
 	}
 }
