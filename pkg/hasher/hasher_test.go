@@ -3,6 +3,7 @@ package hasher_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
@@ -671,5 +672,57 @@ func TestCompute_DockerIgnore_DirectoryPattern(t *testing.T) {
 	}
 	if h1 != h2 {
 		t.Error("modifying a file inside an ignored directory (node_modules/) should not change the hash")
+	}
+}
+
+func TestCompute_MissingLiteralSourceErrors(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY missing.txt /app/\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Fatal("expected error for missing literal source, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing.txt") {
+		t.Errorf("error should name the missing pattern, got: %v", err)
+	}
+}
+
+func TestCompute_MissingGlobErrors(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY *.nope /app/\n",
+		"other.txt":  "some file\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Fatal("expected error for unmatched glob, got nil")
+	}
+	if !strings.Contains(err.Error(), "*.nope") {
+		t.Errorf("error should name the unmatched glob pattern, got: %v", err)
+	}
+}
+
+func TestCompute_DirectoryThatDoesNotExistErrors(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY src/ /app/\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Fatal("expected error for missing src/ directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "src/") {
+		t.Errorf("error should name the missing directory pattern, got: %v", err)
 	}
 }
