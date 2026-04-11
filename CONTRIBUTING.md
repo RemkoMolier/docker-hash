@@ -151,8 +151,9 @@ The full policy lives in [RELEASING.md](RELEASING.md); the contributor-relevant 
 - A scheduled `release-cadence` workflow opens or updates a tracking issue (labelled `release-prep`) when a release is due.
 - The maintainer reviews the issue and pushes the tag manually — there is no unattended auto-tagging.
 
-If your PR fixes a security-sensitive issue (CVE-driven dependency bump, auth fix, anything materially affecting the project's security posture), **add the `security` label** to the PR before merge.
-The cadence workflow checks for this label across the unreleased commit range and surfaces flagged PRs as URGENT in the next release-prep issue, so security fixes do not have to wait for the next weekly slot.
+If your PR fixes a security-sensitive issue (CVE-driven dependency bump, auth fix, anything materially affecting the project's security posture), **call it out clearly in the PR description or a follow-up comment**.
+External contributors usually can't apply labels to GitHub issues and PRs themselves; a maintainer will add the `security` label on your behalf before merge.
+Once the label is in place, the cadence workflow picks the PR up across the unreleased commit range and surfaces it as URGENT in the next release-prep issue, so security fixes do not have to wait for the next weekly slot.
 
 You generally do not need to do anything else.
 The maintainer handles tag pushes and the release workflow takes care of the artifacts.

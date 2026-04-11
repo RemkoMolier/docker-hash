@@ -21,8 +21,17 @@ A docs-only or chore-only week produces no release.
 
 Security-sensitive changes (CVE-driven dep bumps, auth fixes, anything that materially affects the project's security posture) bypass the weekly schedule and should be released as soon as practical after the fix lands.
 
-The signal for "this is security-sensitive" is the **`security` label on the merged PR**.
-The maintainer can also force the cadence workflow to run immediately via `workflow_dispatch` with `reason: security`, which short-circuits the weekly check and surfaces the security-flagged commits.
+The cadence workflow recognises three independent triggers and prepares a release if **any** of them fires:
+
+1. **Releasable type filter** — at least one commit in the range matches `feat`/`fix`/`perf`/`refactor`/`build`/`ci`/`revert`.
+2. **`security` label on a merged PR** — any merged PR in the range carries the `security` label, regardless of its commit type.
+   This is what makes a security-driven `chore(deps):` bump release-prep-eligible even though `chore(deps):` is otherwise filtered out.
+3. **Manual `reason=security`** — a `workflow_dispatch` run with the input `reason: security` forces a release prep even if neither of the above fires (provided there is at least one commit in the range).
+
+In all three cases the workflow opens or updates the same `release-prep` tracking issue.
+Triggers 2 and 3 mark the issue body with an `URGENT — security` header so it stands out in the issue list.
+
+The only thing that **cannot** trigger a release prep is "no commits at all since the latest tag" — there is nothing to ship in that case, so the workflow no-ops even with `reason=security`.
 
 ## What counts as a releasable change
 
