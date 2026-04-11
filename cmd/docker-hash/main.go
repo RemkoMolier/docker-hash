@@ -6,11 +6,19 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
+)
+
+// Build-time variables injected via -ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 type buildArgList []string
@@ -29,6 +37,7 @@ func main() {
 		dockerfilePath string
 		contextDir     string
 		rawBuildArgs   buildArgList
+		showVersion    bool
 	)
 
 	flag.StringVar(&dockerfilePath, "file", "Dockerfile", "Path to the Dockerfile")
@@ -36,7 +45,14 @@ func main() {
 	flag.StringVar(&contextDir, "context", ".", "Path to the build context directory")
 	flag.StringVar(&contextDir, "c", ".", "Path to the build context directory (short)")
 	flag.Var(&rawBuildArgs, "build-arg", "Build argument in NAME=VALUE format (may be repeated)")
+	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
+	flag.BoolVar(&showVersion, "v", false, "Print version information and exit (short)")
 	flag.Parse()
+
+	if showVersion {
+		printVersion(os.Stdout)
+		return
+	}
 
 	// Resolve the Dockerfile path relative to context if it is not absolute.
 	if !filepath.IsAbs(dockerfilePath) {
@@ -60,6 +76,12 @@ func main() {
 	}
 
 	fmt.Println(hash)
+}
+
+// printVersion writes the version banner to w. Extracted so it can be unit-tested
+// without shelling out to a subprocess.
+func printVersion(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "docker-hash %s (%s, %s)\n", version, commit, date)
 }
 
 // parseBuildArgs converts a slice of "NAME=VALUE" or "NAME" strings into a map.

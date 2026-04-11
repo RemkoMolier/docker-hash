@@ -44,6 +44,7 @@ Flags:
   -f, --file      <path>         Path to the Dockerfile  (default: Dockerfile)
   -c, --context   <dir>          Build context directory (default: .)
       --build-arg <NAME=VALUE>   Build argument; may be repeated
+  -v, --version                  Print version information and exit
 ```
 
 ### Examples
@@ -60,6 +61,25 @@ docker-hash --build-arg VERSION=1.2.3 --build-arg ENV=prod
 ```
 
 The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
+
+---
+
+## Checking your version
+
+```sh
+docker-hash --version
+# docker-hash dev (none, unknown)
+```
+
+When built with version metadata injected via ldflags (e.g. by a release pipeline):
+
+```sh
+go build \
+  -ldflags "-X main.version=v0.1.0 -X main.commit=abc1234 -X main.date=2026-01-01T00:00:00Z" \
+  ./cmd/docker-hash/
+./docker-hash --version
+# docker-hash v0.1.0 (abc1234, 2026-01-01T00:00:00Z)
+```
 
 ---
 
