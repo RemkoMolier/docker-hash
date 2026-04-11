@@ -285,6 +285,45 @@ RUN echo hi
 	}
 }
 
+func TestParse_PreFromArgNames(t *testing.T) {
+	// PreFromArgNames must contain every ARG declared before the first
+	// FROM, with or without a default. ARGs declared inside a stage must
+	// NOT appear (they live in CopySource.Scope, not here).
+	const src = `ARG WITH_DEFAULT=value
+ARG WITHOUT_DEFAULT
+FROM alpine:3.20
+ARG STAGE_LOCAL=ignored
+RUN echo hi
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := map[string]struct{}{
+		"WITH_DEFAULT":    {},
+		"WITHOUT_DEFAULT": {},
+	}
+	if len(pr.PreFromArgNames) != len(want) {
+		t.Errorf("PreFromArgNames length: got %d, want %d (got=%v)", len(pr.PreFromArgNames), len(want), pr.PreFromArgNames)
+	}
+	for k := range want {
+		if _, ok := pr.PreFromArgNames[k]; !ok {
+			t.Errorf("PreFromArgNames missing %q", k)
+		}
+	}
+	if _, ok := pr.PreFromArgNames["STAGE_LOCAL"]; ok {
+		t.Error("STAGE_LOCAL (declared after FROM) must not appear in PreFromArgNames")
+	}
+	// Cross-check the existing PreFromArgDefaults invariant: only the
+	// ARG that supplied a default is recorded there.
+	if v, ok := pr.PreFromArgDefaults["WITH_DEFAULT"]; !ok || v != "value" {
+		t.Errorf("PreFromArgDefaults[WITH_DEFAULT] = %q,%v, want value,true", v, ok)
+	}
+	if _, ok := pr.PreFromArgDefaults["WITHOUT_DEFAULT"]; ok {
+		t.Error("PreFromArgDefaults must not contain WITHOUT_DEFAULT (no default supplied)")
+	}
+}
+
 func TestParse_StageAliases(t *testing.T) {
 	const src = `FROM golang:1.25 AS builder
 RUN go version

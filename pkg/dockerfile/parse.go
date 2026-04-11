@@ -320,14 +320,29 @@ type ParseResult struct {
 	// earlier "AS <name>" declaration has IsStageRef set to true.
 	FromRefs []FromRef
 	// PreFromArgDefaults captures `ARG NAME=default` declarations that appear
-	// BEFORE the first FROM line. Per the Dockerfile spec, only these ARGs
-	// are visible to FROM expressions; ARGs declared inside a stage (after a
-	// FROM) are stage-scoped and cannot template subsequent FROM lines.
+	// BEFORE the first FROM line. Per the Dockerfile spec, only ARGs declared
+	// before the first FROM are visible to FROM expressions; ARGs declared
+	// inside a stage (after a FROM) are stage-scoped and cannot template
+	// subsequent FROM lines.
+	//
+	// PreFromArgDefaults only contains entries for the ARGs that supplied an
+	// explicit default value (e.g. `ARG BASE=alpine:3.20`). The wider set of
+	// names declared as pre-FROM ARGs — including those without a default,
+	// e.g. bare `ARG BASE` — lives in PreFromArgNames.
 	//
 	// Callers that want to expand $VAR / ${VAR} references in FromRef.Image
 	// or FromRef.Platform should layer caller-supplied build args over this
-	// map (caller args win) and pass the resulting lookup to FromRef.Expand.
+	// map (caller args win), gated by PreFromArgNames, and pass the resulting
+	// lookup to FromRef.Expand.
 	PreFromArgDefaults map[string]string
+	// PreFromArgNames is the set of ARG names declared BEFORE the first FROM,
+	// regardless of whether they had a default. Per the Dockerfile spec, FROM
+	// expression expansion is only allowed to see these names (plus the
+	// automatic platform ARGs Docker supplies on its own). Callers MUST gate
+	// FROM-expansion lookups by this set so that an arbitrary
+	// `--build-arg RANDOM=foo` cannot leak into a `FROM ${RANDOM}` reference
+	// when the Dockerfile never declared `ARG RANDOM` before any FROM.
+	PreFromArgNames map[string]struct{}
 	// StageAliases is the set of "AS <name>" identifiers declared by the
 	// Dockerfile's FROM instructions, regardless of order. Callers that
 	// re-evaluate stage references after ARG expansion (e.g. when an ARG
@@ -361,6 +376,7 @@ func Parse(r io.Reader) (*ParseResult, error) {
 	pr := &ParseResult{
 		RawContent:         raw,
 		PreFromArgDefaults: make(map[string]string),
+		PreFromArgNames:    make(map[string]struct{}),
 		StageAliases:       make(map[string]struct{}),
 	}
 
@@ -403,13 +419,23 @@ func Parse(r io.Reader) (*ParseResult, error) {
 					seenArgs[name] = struct{}{}
 					pr.BuildArgNames = append(pr.BuildArgNames, name)
 				}
-				// Capture pre-FROM ARG defaults: only ARGs declared BEFORE
-				// the first FROM line are usable in subsequent FROM
+				// Capture pre-FROM ARG declarations: only ARGs declared
+				// BEFORE the first FROM line are usable in subsequent FROM
 				// expressions per the Dockerfile spec. The first declaration
 				// wins; later redeclarations are ignored.
-				if !seenFirstFrom && hasDefault {
-					if _, exists := pr.PreFromArgDefaults[name]; !exists {
-						pr.PreFromArgDefaults[name] = value
+				//
+				// PreFromArgNames records every pre-FROM ARG name (with or
+				// without a default) so the hasher can gate FROM-expansion
+				// lookups by it. PreFromArgDefaults records only the names
+				// that supplied an explicit default, so the lookup has
+				// something to fall back to when the caller did not pass a
+				// --build-arg for that name.
+				if !seenFirstFrom {
+					pr.PreFromArgNames[name] = struct{}{}
+					if hasDefault {
+						if _, exists := pr.PreFromArgDefaults[name]; !exists {
+							pr.PreFromArgDefaults[name] = value
+						}
 					}
 				}
 				// Stage-local ARG declarations are appended to the current

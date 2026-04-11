@@ -40,10 +40,10 @@ inputs:
     description: |
       Set to "true" to skip resolving FROM image digests against the upstream
       registry. FROM references are still expanded against ARG/ENV state and
-      canonicalized offline (so `alpine` and `alpine:latest` hash identically),
-      but no network calls are made. Combine with `no-expand-args: "true"` to
-      reproduce the v0.1.x hash shape exactly. Default: "false" (resolution
-      is on).
+      the base-image hash entry is still canonicalized offline (so `alpine`
+      and `alpine:latest` produce the same base-image entry), but no network
+      calls are made. Combine with `no-expand-args: "true"` to reproduce the
+      v0.1.x hash shape exactly. Default: "false" (resolution is on).
     required: false
     default: "false"
   no-expand-args:

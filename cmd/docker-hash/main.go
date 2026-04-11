@@ -55,10 +55,11 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "Print version information and exit (short)")
 	flag.BoolVar(&noResolveFrom, "no-resolve-from", false,
 		"Do not resolve FROM image digests against the upstream registry. "+
-			"FROM references are still expanded against ARG/ENV state and "+
-			"canonicalized offline (so 'alpine' and 'alpine:latest' hash "+
-			"identically), but no network calls are made. Combine with "+
-			"--no-expand-args to reproduce the v0.1.x hash shape exactly.")
+			"FROM references are still expanded against ARG/ENV state and the "+
+			"base-image hash entry is still canonicalized offline (so 'alpine' "+
+			"and 'alpine:latest' produce the same base-image entry), but no "+
+			"network calls are made. Combine with --no-expand-args to reproduce "+
+			"the v0.1.x hash shape exactly.")
 	flag.BoolVar(&noExpandArgs, "no-expand-args", false,
 		"Disable ARG/ENV expansion in COPY/ADD source paths, --from stage "+
 			"names and FROM image/platform references. With this flag set, "+
@@ -107,8 +108,11 @@ func main() {
 
 	buildArgs := parseBuildArgs(rawBuildArgs)
 
-	// Build the base-image resolver. nil means "opt out" and routes plain-
-	// tag FROM references through the literal-text fallback in the hasher.
+	// Build the base-image resolver. nil means "opt out" of remote
+	// resolution: with NoExpandArgs=false the hasher uses offline mode
+	// (section 4 still emits expanded canonical references, no network),
+	// and with NoExpandArgs=true it uses the v0.1.x-compatible mode that
+	// skips section 4 entirely.
 	var resolver baseimage.Resolver
 	if !noResolveFrom {
 		resolver = baseimage.NewCachingResolver(&baseimage.RemoteResolver{

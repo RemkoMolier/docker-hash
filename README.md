@@ -181,7 +181,7 @@ Since v0.2.0, the action resolves every `FROM` reference against its registry by
 A typical CI job already has the credentials it needs to talk to private registries (via `docker/login-action` or the cloud-provider login actions, both of which write `~/.docker/config.json`), so the action picks them up automatically.
 
 If your workflow runs offline or against an air-gapped runner, set `no-resolve-from: "true"` to skip the registry round-trip.
-ARG/ENV expansion still happens and references are still canonicalized, so `alpine` and `alpine:latest` hash identically:
+ARG/ENV expansion still happens and the section-4 base-image contribution is still canonicalized — so `alpine` and `alpine:latest` produce the same *base-image entry*, even though the *overall hash* still differs because section 1 always hashes the raw Dockerfile bytes:
 
 ```yaml
 - uses: actions/checkout@v6
@@ -387,7 +387,7 @@ Two flags (`--no-resolve-from` and `--no-expand-args`) compose into four modes:
 | `--no-resolve-from` | `--no-expand-args` | Mode | What happens |
 |---|---|---|---|
 | *off* | *off* | **Resolved** (default) | Expand `ARG`/`ENV` everywhere; resolve every plain `FROM` reference against the registry; emit `resolved:<plat>:<repo>@sha256:...` entries. |
-| **on** | *off* | **Offline** | Expand `ARG`/`ENV` everywhere; do **not** call the network. Each `FROM` contributes its expanded canonical reference (so `alpine` and `alpine:latest` hash identically). Hashes differ from the default mode and from v0.1.x by design. |
+| **on** | *off* | **Offline** | Expand `ARG`/`ENV` everywhere; do **not** call the network. Each `FROM` contributes its expanded canonical reference, so `alpine` and `alpine:latest` produce the same section-4 base-image entry (the overall hash still differs between those two Dockerfiles because section 1 always hashes the raw Dockerfile bytes — only the base-image contribution is canonicalized). Hashes differ from the default mode and from v0.1.x by design. |
 | *off* | **on** | **Strict** | Do **not** expand `ARG`/`ENV` anywhere. Resolve plain `FROM` references through the registry as in the default mode. A `FROM ${VAR}` line causes `docker-hash` to **fail** rather than silently ignore the variable — this enforces "all `FROM` lines must be expansion-free" in CI. |
 | **on** | **on** | **v0.1.x compat** | Skip the entire base-images section. The result is bit-for-bit identical to a v0.1.x hash for the same inputs. Useful for comparing against old hashes during a migration. |
 

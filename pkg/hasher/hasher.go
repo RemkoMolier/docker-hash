@@ -192,14 +192,14 @@ func Compute(opts Options) (string, error) {
 	case opts.BaseImageResolver == nil:
 		// Offline: expand, no network.
 		writeSection(h, "base-images")
-		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults)
+		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults, pr.PreFromArgNames)
 		if err := hashBaseImagesOffline(h, pr.FromRefs, pr.StageAliases, lookup); err != nil {
 			return "", fmt.Errorf("hash base images: %w", err)
 		}
 	default:
 		// Resolved: expand, hit registry.
 		writeSection(h, "base-images")
-		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults)
+		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults, pr.PreFromArgNames)
 		if err := hashBaseImages(h, pr.FromRefs, pr.StageAliases, opts, lookup); err != nil {
 			return "", fmt.Errorf("hash base images: %w", err)
 		}
@@ -208,20 +208,82 @@ func Compute(opts Options) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// buildArgLookup returns a dockerfile.ArgLookup that consults caller-supplied
-// build args first, then pre-FROM ARG defaults from the parsed Dockerfile.
-// Either map may be nil. Used for FROM expansion (which is governed by
-// pre-FROM ARGs per the Dockerfile spec); COPY/ADD path expansion uses
-// scopedLookup instead because in-stage ARG/ENV declarations are visible
-// there.
-func buildArgLookup(callerArgs, defaults map[string]string) dockerfile.ArgLookup {
+// autoPlatformArgs is the set of ARG names Docker automatically supplies
+// for FROM expansion, populated at build time from the build host
+// architecture (BUILD*) and the requested target platform (TARGET*). Per
+// the Dockerfile spec ("Automatic platform ARGs in the global scope")
+// these names are visible to FROM expressions even without an explicit
+// `ARG NAME` declaration before the first FROM.
+//
+// docker-hash treats them in a deliberately asymmetric way: the names ARE
+// visible to a caller --build-arg override (so an explicit
+// `--build-arg TARGETPLATFORM=linux/arm64` does change the hash and
+// causes the resolver to fetch that platform's manifest), but NO implicit
+// default value is ever substituted for them. Without a caller value the
+// reference stays literal and the section-4 "still contains $" branch
+// drops the platform to "" so the resolver returns the multi-arch index
+// digest. That's what makes docker-hash output stable across runner
+// architectures: the automatic Docker-supplied value never enters the
+// hash, only the user's explicit choice does.
+//
+// Inside a stage these args are NOT automatically visible — a Dockerfile
+// must redeclare them with `ARG NAME` to use them in COPY/ADD/RUN. That
+// in-stage path is handled in evalScope; this set only governs FROM
+// expansion.
+var autoPlatformArgs = map[string]struct{}{
+	"BUILDPLATFORM":  {},
+	"BUILDOS":        {},
+	"BUILDARCH":      {},
+	"BUILDVARIANT":   {},
+	"TARGETPLATFORM": {},
+	"TARGETOS":       {},
+	"TARGETARCH":     {},
+	"TARGETVARIANT":  {},
+}
+
+// buildArgLookup returns a dockerfile.ArgLookup for FROM expression
+// expansion. Per the Dockerfile spec, only two kinds of names are visible
+// to a FROM expression:
+//
+//  1. ARG names declared BEFORE the first FROM in the Dockerfile (the
+//     `declared` set, sourced from ParseResult.PreFromArgNames). The
+//     declaration may or may not supply a default; the default (when
+//     present) lives in `defaults` and is consulted only when the caller
+//     did not pass a --build-arg for the name.
+//  2. Automatic platform ARGs (see autoPlatformArgs above). These accept
+//     a caller --build-arg override but never substitute an implicit
+//     default. Without a caller value they stay literal so the hasher's
+//     fallback drops the platform to "" — see the autoPlatformArgs
+//     comment for the rationale.
+//
+// An arbitrary caller --build-arg whose name is in NEITHER set must NOT
+// affect FROM expansion — that's the point of this gating, and is what
+// matches `docker build` semantics. The lookup returns ok=false for such
+// names so the reference stays literal and the section-4 "still contains
+// $" branch handles the deterministic fallback.
+//
+// COPY/ADD path expansion uses evalScope, NOT this function, because the
+// in-stage scope is wider (in-stage ARG/ENV declarations are visible
+// inside the same stage).
+func buildArgLookup(callerArgs, defaults map[string]string, declared map[string]struct{}) dockerfile.ArgLookup {
 	return func(name string) (string, bool) {
-		if callerArgs != nil {
-			if v, ok := callerArgs[name]; ok {
-				return v, true
-			}
+		_, isDeclared := declared[name]
+		_, isAutoPlatform := autoPlatformArgs[name]
+		if !isDeclared && !isAutoPlatform {
+			// Out of FROM-expression scope. Leave the reference literal
+			// so the hasher's "$ still present" fallback fires
+			// deterministically.
+			return "", false
 		}
-		if defaults != nil {
+		// Caller --build-arg always wins for in-scope names.
+		if v, ok := callerArgs[name]; ok {
+			return v, true
+		}
+		// For declared pre-FROM ARGs, fall back to the Dockerfile
+		// default. Auto-platform args intentionally do NOT have a
+		// default path — without a caller value they stay literal so
+		// the hasher emits the multi-arch index digest.
+		if isDeclared {
 			if v, ok := defaults[name]; ok {
 				return v, true
 			}
@@ -465,7 +527,11 @@ func hashBaseImagesOffline(
 
 		default:
 			// Plain registry reference. Canonicalize without network
-			// access so "alpine" and "alpine:latest" hash identically.
+			// access so "alpine" and "alpine:latest" produce the same
+			// base-image entry. (The full hash can still differ between
+			// the two Dockerfiles because section 1 hashes the raw
+			// Dockerfile bytes — only the section-4 contribution is
+			// canonicalized here.)
 			canonical, err := baseimage.CanonicalName(ref.Image)
 			if err != nil {
 				// Pathological reference text — fall back to literal
