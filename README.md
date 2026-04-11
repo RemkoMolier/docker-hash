@@ -48,6 +48,70 @@ go build -o docker-hash ./cmd/docker-hash/
 
 ---
 
+## Use as a GitHub Action
+
+`docker-hash` is also published as a reusable composite GitHub Action so you can compute the hash directly inside a workflow without installing the CLI by hand.
+
+### Basic usage
+
+```yaml
+- name: Compute Docker hash
+  id: docker_hash
+  uses: RemkoMolier/docker-hash@v0.1.0
+  with:
+    file: Dockerfile
+    context: .
+    build-args: |
+      VERSION=${{ github.sha }}
+      ENV=prod
+
+- name: Use the hash
+  run: echo "Image hash is ${{ steps.docker_hash.outputs.hash }}"
+```
+
+### Export the hash to an env variable
+
+When you want a later step to consume the hash via a fixed environment variable name (e.g. for templating into a build command), pass `export-env-name`:
+
+```yaml
+- name: Compute Docker hash
+  uses: RemkoMolier/docker-hash@v0.1.0
+  with:
+    context: ./services/api
+    export-env-name: API_IMAGE_HASH
+
+- name: Tag and build
+  run: docker build --tag api:$API_IMAGE_HASH ./services/api
+```
+
+The action always exposes the digest as a stable `hash` step output.
+The optional `export-env-name` is an additional convenience that mirrors the same value into `$GITHUB_ENV` for the rest of the job.
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `file` | `Dockerfile` | Path to the Dockerfile, relative to the workflow's checkout. |
+| `context` | `.` | Build context directory, relative to the workflow's checkout. |
+| `build-args` | `""` | Newline-separated `NAME=VALUE` build args. Values may contain `=`. Empty lines and `#`-prefixed comments are ignored. |
+| `export-env-name` | `""` | Optional environment variable name. If set, the action also writes the hash to `$GITHUB_ENV` under this name. Must be a valid shell identifier and may not start with `GITHUB_` or `RUNNER_`. |
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| `hash` | The 64-character hex SHA-256 digest. |
+
+### Notes
+
+- The action builds `docker-hash` from source on each run using `actions/setup-go@v6`.
+  This adds a small amount of setup time but keeps the action's behaviour aligned with the source at the selected ref.
+  A future revision may switch to downloading release archives for faster cold starts.
+- The Linux and macOS runners are the primary supported platforms.
+  Windows runners are not yet exercised by the self-test in CI; the composite action uses bash steps and should work on Windows runners that have bash on `PATH`, but this is not yet validated.
+
+---
+
 ## Usage
 
 ```text
