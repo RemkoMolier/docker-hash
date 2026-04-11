@@ -56,12 +56,14 @@ inputs:
   auth-file:
     description: |
       Path to a registry auth file in Docker `config.json` or Podman/Skopeo
-      `auth.json` format. When set, this overrides the default auth lookup
-      order ($HOME/.docker/config.json, $DOCKER_CONFIG, $REGISTRY_AUTH_FILE,
-      $XDG_RUNTIME_DIR/containers/auth.json). Same semantic as the
-      Skopeo/Podman/Buildah `--authfile` flag. Most workflows will not need
-      this — `actions/checkout` plus `docker/login-action` already populate
-      the default Docker config.
+      `auth.json` format. When set, this is passed through to the underlying
+      CLI as `--auth-file`, which sets `REGISTRY_AUTH_FILE` for the current
+      run; the default keychain still consults the other auth sources
+      ($HOME/.docker/config.json, $DOCKER_CONFIG,
+      $XDG_RUNTIME_DIR/containers/auth.json) per their normal lookup order.
+      Same semantic as the Skopeo/Podman/Buildah `--authfile` flag. Most
+      workflows will not need this — `actions/checkout` plus
+      `docker/login-action` already populate the default Docker config.
     required: false
     default: ""
 
