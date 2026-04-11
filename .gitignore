@@ -1,0 +1,10 @@
+# Binaries (root-level build output only)
+/docker-hash
+*.exe
+*.test
+
+# Build output
+/dist/
+
+# Go vendor directory
+/vendor/
