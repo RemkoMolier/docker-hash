@@ -117,3 +117,80 @@ jobs:
         run: |
           NODE_PATH="$MDLINT_PREFIX/node_modules" \
             npx --prefix "$MDLINT_PREFIX" markdownlint-cli2 "**/*.md"
+
+  action-self-test:
+    name: Action self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run docker-hash composite action via uses ./
+        id: action
+        uses: ./
+        with:
+          file: ./testdata/action/Dockerfile
+          context: ./testdata/action
+          build-args: |
+            VERSION=1.2.3
+            ENV=test
+          export-env-name: TEST_HASH
+
+      - name: Verify action output matches direct CLI invocation
+        # Build from the same source the action used and run with the same
+        # inputs. The two digests must be byte-identical or the wrapper has
+        # diverged from the underlying CLI.
+        run: |
+          set -euo pipefail
+          go build -o /tmp/docker-hash-direct ./cmd/docker-hash
+          DIRECT="$(/tmp/docker-hash-direct \
+            --file ./testdata/action/Dockerfile \
+            --context ./testdata/action \
+            --build-arg VERSION=1.2.3 \
+            --build-arg ENV=test)"
+          ACTION="${{ steps.action.outputs.hash }}"
+          if [[ "$ACTION" != "$DIRECT" ]]; then
+            echo "::error::action output ($ACTION) does not match direct CLI ($DIRECT)"
+            exit 1
+          fi
+          echo "action output matches direct CLI: $ACTION"
+
+      - name: Verify env export propagates to later steps
+        run: |
+          set -euo pipefail
+          if [[ -z "${TEST_HASH:-}" ]]; then
+            echo "::error::TEST_HASH was not exported to \$GITHUB_ENV"
+            exit 1
+          fi
+          if [[ "$TEST_HASH" != "${{ steps.action.outputs.hash }}" ]]; then
+            echo "::error::TEST_HASH ($TEST_HASH) does not match step output (${{ steps.action.outputs.hash }})"
+            exit 1
+          fi
+          echo "env export verified: TEST_HASH=$TEST_HASH"
+
+      - name: Verify build-args containing = are preserved end-to-end
+        # Acceptance criterion #4: a value with `=` in it must reach the CLI
+        # intact rather than being split on the first `=`.
+        id: with_equals
+        uses: ./
+        with:
+          file: ./testdata/action/Dockerfile
+          context: ./testdata/action
+          build-args: |
+            VERSION=v1.0.0+build=42
+            ENV=k=v
+
+      - name: Verify equals-preservation matches direct CLI
+        run: |
+          set -euo pipefail
+          DIRECT="$(/tmp/docker-hash-direct \
+            --file ./testdata/action/Dockerfile \
+            --context ./testdata/action \
+            --build-arg 'VERSION=v1.0.0+build=42' \
+            --build-arg 'ENV=k=v')"
+          ACTION="${{ steps.with_equals.outputs.hash }}"
+          if [[ "$ACTION" != "$DIRECT" ]]; then
+            echo "::error::equals-preservation: action ($ACTION) does not match direct CLI ($DIRECT)"
+            exit 1
+          fi
+          echo "equals preservation verified: $ACTION"

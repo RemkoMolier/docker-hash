@@ -1,0 +1,105 @@
+name: docker-hash
+description: Compute a deterministic SHA-256 hash for a Docker image build, based on the Dockerfile, build arguments, and files referenced by COPY/ADD instructions.
+author: Remko Molier
+
+inputs:
+  file:
+    description: Path to the Dockerfile, relative to the workflow's checkout.
+    required: false
+    default: Dockerfile
+  context:
+    description: Path to the build context directory, relative to the workflow's checkout.
+    required: false
+    default: .
+  build-args:
+    description: |
+      Build arguments to include in the hash, one NAME=VALUE per line.
+      Values may contain `=` characters; only the first `=` separates name and value.
+      Empty lines and lines starting with `#` are ignored.
+    required: false
+    default: ""
+  export-env-name:
+    description: |
+      Optional environment variable name to receive the computed hash. When set,
+      the action also writes `<name>=<digest>` to `$GITHUB_ENV` so later steps in
+      the same job can read it directly. The name must be a valid shell
+      identifier (`[A-Za-z_][A-Za-z0-9_]*`) and may not start with `GITHUB_` or
+      `RUNNER_` (reserved by the runner).
+    required: false
+    default: ""
+
+outputs:
+  hash:
+    description: The 64-character hex SHA-256 digest computed by docker-hash.
+    value: ${{ steps.compute.outputs.hash }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache-dependency-path: ${{ github.action_path }}/go.sum
+
+    - name: Build docker-hash
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: go build -o "${RUNNER_TEMP}/docker-hash" ./cmd/docker-hash
+
+    - name: Compute hash
+      id: compute
+      shell: bash
+      env:
+        INPUT_FILE: ${{ inputs.file }}
+        INPUT_CONTEXT: ${{ inputs.context }}
+        INPUT_BUILD_ARGS: ${{ inputs.build-args }}
+      run: |
+        set -euo pipefail
+        BIN="${RUNNER_TEMP}/docker-hash"
+        ARGS=( --file "$INPUT_FILE" --context "$INPUT_CONTEXT" )
+        # Parse the multiline build-args input. One NAME=VALUE per non-empty
+        # line; trim surrounding whitespace; skip blanks and `#` comments.
+        if [[ -n "$INPUT_BUILD_ARGS" ]]; then
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            ARGS+=( --build-arg "$line" )
+          done <<< "$INPUT_BUILD_ARGS"
+        fi
+        HASH="$("$BIN" "${ARGS[@]}")"
+        # Defensive: the CLI contract is a single 64-char lowercase hex
+        # SHA-256 digest. Reject anything else before writing to
+        # $GITHUB_OUTPUT (and downstream $GITHUB_ENV) so unexpected stdout
+        # — extra lines, log text, an error string — can't corrupt the
+        # output file or inject newlines into a later workflow step.
+        if [[ ! "$HASH" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::docker-hash CLI returned unexpected output (expected a 64-char hex SHA-256 digest):" >&2
+          printf '%s\n' "$HASH" >&2
+          exit 1
+        fi
+        echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+        echo "docker-hash: $HASH"
+
+    - name: Export env var
+      if: inputs.export-env-name != ''
+      shell: bash
+      env:
+        EXPORT_ENV_NAME: ${{ inputs.export-env-name }}
+        HASH: ${{ steps.compute.outputs.hash }}
+      run: |
+        set -euo pipefail
+        # Reject anything that isn't a POSIX shell identifier so we don't write
+        # garbage into $GITHUB_ENV (which would silently corrupt later steps).
+        if [[ ! "$EXPORT_ENV_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          echo "::error::export-env-name '$EXPORT_ENV_NAME' is not a valid shell identifier" >&2
+          exit 1
+        fi
+        # Reject reserved prefixes the runner uses for its own state.
+        if [[ "$EXPORT_ENV_NAME" == GITHUB_* || "$EXPORT_ENV_NAME" == RUNNER_* ]]; then
+          echo "::error::export-env-name '$EXPORT_ENV_NAME' uses a reserved prefix (GITHUB_*, RUNNER_*)" >&2
+          exit 1
+        fi
+        echo "$EXPORT_ENV_NAME=$HASH" >> "$GITHUB_ENV"
+        echo "exported $EXPORT_ENV_NAME to \$GITHUB_ENV"
