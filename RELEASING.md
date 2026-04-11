@@ -35,7 +35,7 @@ The only thing that **cannot** trigger a release prep is "no commits at all sinc
 
 #### Where the `security` label comes from
 
-The `security` label that trigger 2 reads can arrive on a PR in two ways:
+The `security` label read by the 2nd trigger can arrive on a PR in two ways:
 
 - **Automatically by Renovate** for any PR opened in response to a GHSA / OSV vulnerability advisory.
   This is configured by the `vulnerabilityAlerts.labels` rule in [renovate.json](renovate.json) and requires no human action — the label appears the moment Renovate opens the PR.
