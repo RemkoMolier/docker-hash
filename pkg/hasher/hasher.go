@@ -3,6 +3,7 @@
 package hasher
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/RemkoMolier/docker-hash/pkg/baseimage"
 	"github.com/RemkoMolier/docker-hash/pkg/dockerfile"
 	"github.com/moby/patternmatcher"
 	"github.com/moby/patternmatcher/ignorefile"
@@ -31,6 +33,19 @@ type Options struct {
 	// in the hash; undeclared entries are silently ignored. Arguments present in
 	// the Dockerfile ARG list but absent from this map are also omitted.
 	BuildArgs map[string]string
+	// BaseImageResolver, when non-nil, is called for every FROM line whose
+	// target is a registry image (i.e. not "scratch", not a stage reference,
+	// and not already pinned by digest). The resolved "<repo>@sha256:..."
+	// digest string is folded into a dedicated "base-images" section in the
+	// hash output. Pass nil to omit the entire base-images section: the FROM
+	// text then still affects the hash via the raw-Dockerfile section in
+	// section 1, and the resulting digest is bit-for-bit identical to a
+	// v0.1.x hash for the same inputs.
+	BaseImageResolver baseimage.Resolver
+	// Context is the context.Context passed to BaseImageResolver. nil means
+	// context.Background(). Cancellation propagates from this context to all
+	// in-flight registry calls.
+	Context context.Context
 }
 
 // contextEntry represents a single entry collected from a COPY/ADD source.
@@ -56,6 +71,7 @@ type contextEntry struct {
 //   - the path and content of every regular file referenced by COPY/ADD
 //   - for top-level source symlinks: the content of the resolved target
 //   - for symlinks inside a walked directory: the symlink target string only
+//   - the resolved digest of every FROM image, when opts.BaseImageResolver is set
 func Compute(opts Options) (string, error) {
 	pr, err := dockerfile.ParseFile(opts.DockerfilePath)
 	if err != nil {
@@ -109,7 +125,176 @@ func Compute(opts Options) (string, error) {
 		}
 	}
 
+	// 4. Hash the FROM base images. Each FROM line in the Dockerfile
+	// contributes one entry, in declaration order, so the hash captures any
+	// drift in the upstream registry. The contribution shape depends on the
+	// kind of FROM after $VAR / ${VAR} expansion against pre-FROM ARG
+	// defaults plus caller-supplied build args:
+	//
+	//   - "FROM scratch"        → "scratch"
+	//   - "FROM <stage>"        → "stage:<alias>" (no resolution)
+	//   - "FROM <repo>@<sha>"   → "<canonical>@<sha>" (no network call)
+	//   - "FROM <repo>:<tag>"   → "<canonical>@<resolved-sha>" via the
+	//                              resolver
+	//   - "FROM ${VAR}" with no
+	//     value anywhere         → "unexpanded:..." (literal contribution)
+	//
+	// Platform variables that are not resolvable (typically `$BUILDPLATFORM`
+	// or `$TARGETPLATFORM` when the caller did not supply them) drop to "no
+	// platform" so the resolver returns the multi-arch index digest, which
+	// is the deterministic choice across runner architectures.
+	//
+	// This entire section is skipped when opts.BaseImageResolver is nil
+	// (the --no-resolve-from path), which makes the resulting hash
+	// bit-for-bit identical to a v0.1.x hash for the same inputs. The FROM
+	// line text is still part of the Dockerfile content hashed in section 1,
+	// so different FROM tags continue to produce different hashes.
+	if opts.BaseImageResolver != nil {
+		writeSection(h, "base-images")
+		lookup := buildArgLookup(opts.BuildArgs, pr.PreFromArgDefaults)
+		if err := hashBaseImages(h, pr.FromRefs, pr.StageAliases, opts, lookup); err != nil {
+			return "", fmt.Errorf("hash base images: %w", err)
+		}
+	}
+
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// buildArgLookup returns a dockerfile.ArgLookup that consults caller-supplied
+// build args first, then pre-FROM ARG defaults from the parsed Dockerfile.
+// Either map may be nil.
+func buildArgLookup(callerArgs, defaults map[string]string) dockerfile.ArgLookup {
+	return func(name string) (string, bool) {
+		if callerArgs != nil {
+			if v, ok := callerArgs[name]; ok {
+				return v, true
+			}
+		}
+		if defaults != nil {
+			if v, ok := defaults[name]; ok {
+				return v, true
+			}
+		}
+		return "", false
+	}
+}
+
+// hashBaseImages folds every FROM reference in the parsed Dockerfile into h.
+// See Compute's section-4 comment for the contribution rules. Caller must
+// only invoke this when opts.BaseImageResolver is non-nil; the --no-resolve-from
+// path skips the entire section in Compute, not in this helper.
+//
+// Each FromRef is expanded against `lookup` before any other processing, so
+// $VAR / ${VAR} references in either the image or the platform field are
+// substituted using caller-supplied build args layered over pre-FROM ARG
+// defaults. After expansion, IsStageRef is re-evaluated against
+// `stageAliases` because an ARG can resolve to a stage alias.
+func hashBaseImages(
+	h hash.Hash,
+	refs []dockerfile.FromRef,
+	stageAliases map[string]struct{},
+	opts Options,
+	lookup dockerfile.ArgLookup,
+) error {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	for i, original := range refs {
+		// Expand $VAR / ${VAR} references in both Image and Platform.
+		ref := original.Expand(lookup)
+
+		// Re-evaluate stage detection: the parser tagged IsStageRef on the
+		// literal Image, but if an ARG expanded to a known stage alias the
+		// post-expansion ref is also a stage reference and must not hit
+		// the resolver.
+		if !ref.IsStageRef {
+			if _, isStage := stageAliases[ref.Image]; isStage {
+				ref.IsStageRef = true
+			}
+		}
+
+		// Always include a per-line index so two FROM lines with the same
+		// resolved image still contribute distinct positions.
+		_, _ = fmt.Fprintf(h, "from[%d]:", i)
+
+		switch {
+		case ref.IsStageRef:
+			// Internal stage reference. The underlying image was already
+			// hashed earlier in the slice; record only the alias here so
+			// renaming a stage produces a different hash.
+			_, _ = fmt.Fprintf(h, "stage:%s\n", ref.Image)
+
+		case baseimage.IsScratch(ref.Image):
+			// The Docker-internal sentinel. No registry, no digest, but
+			// still distinguishable from any registry image.
+			_, _ = fmt.Fprintf(h, "scratch\n")
+
+		case baseimage.IsAlreadyPinned(ref.Image):
+			// Already pinned by digest. Canonicalise offline (no network,
+			// no resolver invocation) and emit the same "resolved:" shape
+			// as a fully-resolved entry, so a "tag-then-digest pin" upgrade
+			// produces the same hash as the resolved tag.
+			canonical, err := baseimage.Canonicalize(ref.Image)
+			if err != nil {
+				return fmt.Errorf("canonicalize FROM %q: %w", ref.Image, err)
+			}
+			_, _ = fmt.Fprintf(h, "resolved:%s:%s\n", platformForResolverHash(ref.Platform), canonical)
+
+		case strings.ContainsRune(ref.Image, '$'):
+			// The image still contains an unresolvable variable after
+			// expansion: the ARG was referenced but has neither a default
+			// in the Dockerfile nor a value in opts.BuildArgs. Fall back
+			// to a literal contribution rather than crashing the run.
+			//
+			// The full FROM line text (including the unresolved ${...})
+			// is still in the section-1 Dockerfile content, so changing
+			// the templated value still affects the hash via that path.
+			_, _ = fmt.Fprintf(h, "unexpanded:%s:%s\n", platformOrDash(ref.Platform), ref.Image)
+
+		default:
+			// Plain registry reference — go fetch the digest. Drop any
+			// unresolvable platform variable (typically $BUILDPLATFORM /
+			// $TARGETPLATFORM with no caller-supplied value) to "no
+			// platform" so the resolver returns the multi-arch index
+			// digest. The deterministic choice across runner archs.
+			platForResolver := ref.Platform
+			if strings.ContainsRune(platForResolver, '$') {
+				platForResolver = ""
+			}
+			resolved, err := opts.BaseImageResolver.Resolve(ctx, baseimage.Reference{
+				Image:    ref.Image,
+				Platform: platForResolver,
+			})
+			if err != nil {
+				return fmt.Errorf("resolve FROM %q: %w", ref.Image, err)
+			}
+			_, _ = fmt.Fprintf(h, "resolved:%s:%s\n", platformForResolverHash(platForResolver), resolved)
+		}
+	}
+	return nil
+}
+
+// platformForResolverHash returns the platform discriminator used in
+// "resolved:" hash entries. Empty platforms (or platforms whose value still
+// contains a "$" because the variable could not be expanded) collapse to
+// "-" so the hash output is stable regardless of runner architecture.
+func platformForResolverHash(platform string) string {
+	if platform == "" || strings.ContainsRune(platform, '$') {
+		return "-"
+	}
+	return platform
+}
+
+// platformOrDash returns the given platform string, or "-" if it is empty.
+// Used as a discriminator in the base-image hash contribution so two FROMs
+// of the same image with different --platform values hash distinctly.
+func platformOrDash(platform string) string {
+	if platform == "" {
+		return "-"
+	}
+	return platform
 }
 
 // writeSection writes a labelled separator into h so that different sections

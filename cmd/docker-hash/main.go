@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RemkoMolier/docker-hash/pkg/baseimage"
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
 )
 
@@ -38,6 +40,9 @@ func main() {
 		contextDir     string
 		rawBuildArgs   buildArgList
 		showVersion    bool
+		noResolveFrom  bool
+		platform       string
+		authFile       string
 	)
 
 	flag.StringVar(&dockerfilePath, "file", "Dockerfile", "Path to the Dockerfile")
@@ -47,11 +52,40 @@ func main() {
 	flag.Var(&rawBuildArgs, "build-arg", "Build argument in NAME=VALUE format (may be repeated)")
 	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
 	flag.BoolVar(&showVersion, "v", false, "Print version information and exit (short)")
+	flag.BoolVar(&noResolveFrom, "no-resolve-from", false,
+		"Do not resolve FROM image digests against the upstream registry. "+
+			"Plain-tag references contribute their literal text to the hash, "+
+			"reproducing the v0.1.x behaviour. Use this for offline runs or to "+
+			"compare against a v0.1.x hash.")
+	flag.StringVar(&platform, "platform", "",
+		"Force a specific platform (e.g. linux/amd64) when resolving FROM "+
+			"image digests for multi-arch images. Empty (the default) hashes "+
+			"the multi-arch index digest, which keeps the hash stable across "+
+			"runner architectures. Per-FROM --platform= flags in the Dockerfile "+
+			"always take precedence over this value.")
+	flag.StringVar(&authFile, "auth-file", "",
+		"Path to a registry auth file in Docker config.json or Podman/Skopeo "+
+			"auth.json format. When set, this sets REGISTRY_AUTH_FILE for the "+
+			"current run; the default keychain still consults the other auth "+
+			"sources ($HOME/.docker/config.json, $DOCKER_CONFIG, "+
+			"$XDG_RUNTIME_DIR/containers/auth.json) per their normal lookup "+
+			"order. Same semantic as the Skopeo/Podman/Buildah --authfile flag.")
 	flag.Parse()
 
 	if showVersion {
 		printVersion(os.Stdout)
 		return
+	}
+
+	// --auth-file: set REGISTRY_AUTH_FILE so go-containerregistry's default
+	// keychain picks the file up. Setting the env var (rather than building
+	// a custom keychain ourselves) keeps the lookup logic in one place and
+	// matches the Skopeo/Podman/Buildah convention.
+	if authFile != "" {
+		if err := os.Setenv("REGISTRY_AUTH_FILE", authFile); err != nil {
+			fmt.Fprintf(os.Stderr, "error: set REGISTRY_AUTH_FILE: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Resolve the Dockerfile path relative to context if it is not absolute.
@@ -65,10 +99,21 @@ func main() {
 
 	buildArgs := parseBuildArgs(rawBuildArgs)
 
+	// Build the base-image resolver. nil means "opt out" and routes plain-
+	// tag FROM references through the literal-text fallback in the hasher.
+	var resolver baseimage.Resolver
+	if !noResolveFrom {
+		resolver = baseimage.NewCachingResolver(&baseimage.RemoteResolver{
+			PlatformOverride: platform,
+		})
+	}
+
 	hash, err := hasher.Compute(hasher.Options{
-		DockerfilePath: dockerfilePath,
-		ContextDir:     contextDir,
-		BuildArgs:      buildArgs,
+		DockerfilePath:    dockerfilePath,
+		ContextDir:        contextDir,
+		BuildArgs:         buildArgs,
+		BaseImageResolver: resolver,
+		Context:           context.Background(),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

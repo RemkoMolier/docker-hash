@@ -194,3 +194,47 @@ jobs:
             exit 1
           fi
           echo "equals preservation verified: $ACTION"
+
+      - name: Verify no-resolve-from reproduces the v0.1.x hash
+        # Acceptance criterion from #44: --no-resolve-from must be bit-for-bit
+        # identical to the v0.1.x hash for the same inputs. The hash below was
+        # captured from a v0.1.0 binary against the same testdata fixture (see
+        # the action self-test history on the v0.1.0 release-cut session).
+        id: no_resolve
+        uses: ./
+        with:
+          file: ./testdata/action/Dockerfile
+          context: ./testdata/action
+          build-args: |
+            VERSION=1.2.3
+            ENV=test
+          no-resolve-from: "true"
+
+      - name: Assert no-resolve-from hash matches v0.1.0
+        env:
+          EXPECTED: 55e348f31bff6556278c8bccaf0ba3763299859f11afd79179e0d68f51a8a9d5
+          GOT: ${{ steps.no_resolve.outputs.hash }}
+        run: |
+          set -euo pipefail
+          if [[ "$GOT" != "$EXPECTED" ]]; then
+            echo "::error::no-resolve-from hash drift: got $GOT, expected $EXPECTED"
+            echo "::error::This means --no-resolve-from is no longer bit-for-bit compatible with v0.1.x."
+            exit 1
+          fi
+          echo "no-resolve-from preserves v0.1.x hash: $GOT"
+
+      - name: Verify --no-resolve-from also matches the direct CLI
+        run: |
+          set -euo pipefail
+          DIRECT="$(/tmp/docker-hash-direct \
+            --no-resolve-from \
+            --file ./testdata/action/Dockerfile \
+            --context ./testdata/action \
+            --build-arg VERSION=1.2.3 \
+            --build-arg ENV=test)"
+          ACTION="${{ steps.no_resolve.outputs.hash }}"
+          if [[ "$ACTION" != "$DIRECT" ]]; then
+            echo "::error::no-resolve-from: action ($ACTION) does not match direct CLI ($DIRECT)"
+            exit 1
+          fi
+          echo "no-resolve-from action↔CLI parity verified: $ACTION"

@@ -175,6 +175,33 @@ the floating `vX.Y` / `vX` refs are not updated for pre-releases.
 
 **Recommendation:** pin to `vX.Y.Z` for reproducible CI runs.
 
+### Resolving FROM image digests in CI
+
+Since v0.2.0, the action resolves every `FROM` reference against its registry by default and folds the digest into the hash, so a workflow's cache key invalidates when an upstream image is repointed under the same tag.
+A typical CI job already has the credentials it needs to talk to private registries (via `docker/login-action` or the cloud-provider login actions, both of which write `~/.docker/config.json`), so the action picks them up automatically.
+
+If your workflow runs offline, against an air-gapped runner, or simply does not need this feature, set `no-resolve-from: "true"` to reproduce the v0.1.x hash format bit-for-bit:
+
+```yaml
+- uses: actions/checkout@v6
+
+- name: Compute Docker hash (offline mode)
+  uses: RemkoMolier/docker-hash@v0.2.0
+  with:
+    no-resolve-from: "true"
+```
+
+For a workflow that needs a specific platform's manifest:
+
+```yaml
+- uses: actions/checkout@v6
+
+- name: Compute Docker hash for linux/amd64 only
+  uses: RemkoMolier/docker-hash@v0.2.0
+  with:
+    platform: linux/amd64
+```
+
 ### Inputs
 
 | Input | Default | Description |
@@ -183,6 +210,9 @@ the floating `vX.Y` / `vX` refs are not updated for pre-releases.
 | `context` | `.` | Build context directory, relative to the workflow's checkout. |
 | `build-args` | `""` | Newline-separated `NAME=VALUE` build args. Values may contain `=`. Empty lines and `#`-prefixed comments are ignored. |
 | `export-env-name` | `""` | Optional environment variable name. If set, the action also writes the hash to `$GITHUB_ENV` under this name. Must be a valid shell identifier and may not start with `GITHUB_` or `RUNNER_`. |
+| `no-resolve-from` | `"false"` | Set to `"true"` to skip resolving `FROM` image digests. Reproduces the v0.1.x behaviour bit-for-bit. |
+| `platform` | `""` | Force a specific platform (e.g. `linux/amd64`) when resolving multi-arch base images. Empty hashes the multi-arch index digest. Per-FROM `--platform=` flags in the Dockerfile take precedence. |
+| `auth-file` | `""` | Path to a registry auth file (Docker `config.json` or Podman/Skopeo `auth.json` format). Same semantic as the Skopeo/Podman/Buildah `--authfile` flag. Most workflows will not need this — `actions/checkout` plus `docker/login-action` already populate the default Docker config. |
 
 ### Outputs
 
@@ -206,10 +236,13 @@ the floating `vX.Y` / `vX` refs are not updated for pre-releases.
 docker-hash [flags]
 
 Flags:
-  -f, --file      <path>         Path to the Dockerfile  (default: Dockerfile)
-  -c, --context   <dir>          Build context directory (default: .)
-      --build-arg <NAME=VALUE>   Build argument; may be repeated
-  -v, --version                  Print version information and exit
+  -f, --file        <path>         Path to the Dockerfile  (default: Dockerfile)
+  -c, --context     <dir>          Build context directory (default: .)
+      --build-arg   <NAME=VALUE>   Build argument; may be repeated
+      --no-resolve-from            Do not resolve FROM image digests; reproduces v0.1.x behaviour
+      --platform    <os/arch>      Force a specific platform when resolving FROM digests
+      --auth-file   <path>         Registry auth file path (Docker / Podman / Skopeo format)
+  -v, --version                    Print version information and exit
 ```
 
 ### Examples
@@ -223,6 +256,16 @@ docker-hash -f path/to/Dockerfile -c path/to/context
 
 # Pass build arguments.
 docker-hash --build-arg VERSION=1.2.3 --build-arg ENV=prod
+
+# Skip the registry round-trip — useful for offline runs or to compare against
+# a v0.1.x hash.
+docker-hash --no-resolve-from
+
+# Force a specific architecture when resolving multi-arch FROM images.
+docker-hash --platform=linux/amd64
+
+# Use a specific registry auth file (matches Skopeo/Podman/Buildah --authfile).
+docker-hash --auth-file ~/.config/containers/auth.json
 ```
 
 The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
@@ -250,7 +293,7 @@ go build \
 
 ## How it works
 
-1. The Dockerfile is parsed to extract `COPY`/`ADD` source paths and `ARG` declarations.
+1. The Dockerfile is parsed to extract `FROM` references, `COPY`/`ADD` source paths, and `ARG` declarations.
 2. For each `COPY`/`ADD` that references the **build context** (i.e. without `--from=<stage>`), all matching files are collected and their contents are hashed.
    If a `.dockerignore` file is present in the context root, it is applied before collecting files — matching the behaviour of `docker build`.
    Symbolic links are handled in two ways that mirror Docker's classic builder behaviour:
@@ -260,7 +303,92 @@ go build \
      This matches what Docker preserves in the resulting image layer.
 3. Only build arguments that are **declared** with `ARG` in the Dockerfile **and** explicitly supplied via `--build-arg` are included in the hash.
    Undeclared `--build-arg` values and declared args with no supplied value are both ignored.
-4. All contributions are combined with labelled section separators and a per-file SHA-256 sub-hash into a final SHA-256 digest.
+4. Each `FROM` reference is resolved to its current registry digest and folded into the hash, so a tag drift in the upstream registry produces a different hash for an otherwise unchanged Dockerfile.
+   `FROM scratch`, `FROM <stage-alias>`, and references that already include a `@sha256:...` digest are handled offline; only plain-tag references trigger a network call.
+   Pass `--no-resolve-from` to skip this step entirely and reproduce the v0.1.x behaviour bit-for-bit.
+5. All contributions are combined with labelled section separators and a per-file SHA-256 sub-hash into a final SHA-256 digest.
+
+### Resolving FROM image digests
+
+By default, every `FROM` reference is resolved against its registry to capture the current image digest.
+This closes the silent-mutable-input gap that v0.1.x had: if `golang:1.25` is repointed at a new build, the docker-hash output changes even though the Dockerfile and context are byte-for-byte identical.
+
+The resolver:
+
+- Skips `FROM scratch`, `FROM <stage-alias>`, and `FROM <repo>@sha256:...` (already pinned).
+   None of these need a network call.
+- Uses the **multi-arch index digest** by default for plain-tag references, so the same Dockerfile hashes the same on every runner architecture.
+- Honours per-FROM `--platform=` flags inside the Dockerfile, falling back to the CLI `--platform` flag, falling back to "use the index digest."
+- Caches resolved digests **per invocation**: a Dockerfile with three stages off the same base image makes one network call, not three.
+   The cache is never persisted; the whole point of resolving every run is to detect drift.
+
+#### Build-arg expansion in `FROM` lines
+
+`docker-hash` expands `$VAR` and `${VAR}` references in both the image and the `--platform=` value of every `FROM` line before resolving.
+The lookup order is:
+
+1. **Caller-supplied build args** passed via `--build-arg NAME=VALUE` on the `docker-hash` command line.
+2. **Pre-FROM `ARG` defaults** declared in the Dockerfile *before* the first `FROM` instruction (per the Dockerfile spec, only those `ARG`s are visible to `FROM` expressions).
+
+A reference whose name is found is substituted; a reference whose name is unknown is left literal.
+Substitution is single-pass — values returned by the lookup are not themselves re-scanned for further `$...` references, matching the Dockerfile spec for `FROM`-line `ARG` expansion.
+
+Common patterns now work end-to-end:
+
+```dockerfile
+ARG BASE=alpine:3.20
+FROM ${BASE}
+```
+
+→ resolves to whatever `alpine:3.20` currently points at in the registry.
+Pass `--build-arg BASE=alpine:3.21` to override the default and produce a different hash that tracks the new tag's actual digest.
+
+```dockerfile
+FROM --platform=$BUILDPLATFORM alpine:3.20
+```
+
+→ no crash.
+`$BUILDPLATFORM` and `$TARGETPLATFORM` are auto-supplied by Docker at build time and reflect the build host's architecture, which is intentionally non-deterministic across runners.
+When `docker-hash` finds an unresolved `$...` in a `--platform=` value (typically because the caller did not pass `--build-arg BUILDPLATFORM=...`), it drops the platform to "no platform" so the resolver returns the **multi-arch index digest** — the deterministic choice across runner architectures.
+If you actually want a per-platform hash, pass the value explicitly (e.g. `--build-arg TARGETPLATFORM=linux/arm64`) and the resolver will use the platform-specific manifest digest.
+
+When an `ARG` resolves to a stage alias declared in the same Dockerfile, the resulting `FROM` is treated as a stage reference and skipped by the resolver, just as if the alias had been written literally.
+
+If a `FROM` line references a `$VAR` that has neither a pre-`FROM` `ARG` default nor a caller-supplied value, the run does **not** crash.
+The hasher falls back to a literal `unexpanded:` contribution containing the partially-expanded text.
+The full `FROM` line is also in the section-1 Dockerfile content, so the hash still discriminates between different unresolvable expressions — but it cannot reflect the actual base image's digest because there is nothing concrete to resolve.
+
+#### Interaction with `--no-resolve-from`
+
+`ARG` expansion only happens when the resolver is **on** (the v0.2.0 default).
+With `--no-resolve-from`, the entire `base-images` section is skipped — no expansion, no resolution, bit-for-bit v0.1.x output for the same inputs.
+
+Build-arg sensitivity is still preserved in that mode via two paths:
+
+- Section 2 (`build-args`) hashes every declared `ARG` name against its caller-supplied value, so `--build-arg BASE=alpine:3.21` and `--build-arg BASE=alpine:3.22` already produce different hashes without expansion.
+- Section 1 (`dockerfile`) hashes the raw Dockerfile bytes, so `FROM ${BASE}` and `FROM ${OTHER}` produce different hashes too.
+
+Together those preserve the v0.1.x guarantee: same Dockerfile + same caller args → same v0.1.x hash, every time.
+
+#### Authentication
+
+Authentication flows through `google/go-containerregistry`'s default keychain, which reads, in order:
+
+1. `$HOME/.docker/config.json`
+2. `$DOCKER_CONFIG/config.json`
+3. `$REGISTRY_AUTH_FILE` (Podman / Skopeo / Buildah convention)
+4. `$XDG_RUNTIME_DIR/containers/auth.json` (Podman default path)
+
+Cloud-provider credential helpers (ECR, GCR, ACR) are picked up automatically when the corresponding helper binaries are on `PATH`.
+The `--auth-file=<path>` flag is the explicit equivalent of Skopeo's, Podman's, and Buildah's `--authfile` flag — it sets `REGISTRY_AUTH_FILE` for the current run.
+
+#### Failure modes
+
+- **Network unreachable**: the run fails with the offending image name in the error message.
+   Use `--no-resolve-from` for offline runs.
+- **Image not found / 404 / auth missing**: same — fail loud rather than silently fall back, otherwise the determinism story breaks.
+- **Behind a corporate registry mirror**: `HTTPS_PROXY` is honoured at the connection level.
+   Native `containerd` `hosts.toml`-style mirror rewriting is tracked as a follow-up; for now, set the proxy env var or use `--no-resolve-from`.
 
 ### Known limitations
 

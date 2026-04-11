@@ -1,13 +1,38 @@
 package hasher_test
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/RemkoMolier/docker-hash/pkg/baseimage"
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
 )
+
+// fakeResolver is a baseimage.Resolver backed by a static map. It records
+// every call so tests can assert on the number of underlying lookups (which
+// matters for the per-Compute cache).
+type fakeResolver struct {
+	results map[string]string
+	calls   atomic.Int32
+	err     error
+}
+
+func (f *fakeResolver) Resolve(_ context.Context, ref baseimage.Reference) (string, error) {
+	f.calls.Add(1)
+	if f.err != nil {
+		return "", f.err
+	}
+	key := ref.Image + "|" + ref.Platform
+	if v, ok := f.results[key]; ok {
+		return v, nil
+	}
+	return "", errors.New("fakeResolver: no result for " + key)
+}
 
 // buildTestContext creates a temporary directory with a Dockerfile and
 // context files, returning the directory path and a cleanup function.
@@ -675,11 +700,568 @@ func TestCompute_DockerIgnore_DirectoryPattern(t *testing.T) {
 	}
 }
 
+// ---- FROM digest resolution (#44) ----
+
+func TestCompute_BaseImage_ResolverInvokedWhenSet(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM golang:1.25\nRUN go version\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"golang:1.25|": "index.docker.io/library/golang@sha256:aaa",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1", c)
+	}
+}
+
+func TestCompute_BaseImage_DifferentResolvedDigestChangesHash(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM golang:1.25\nRUN go version\n",
+	})
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+
+	// Same Dockerfile, two resolvers returning different digests for the
+	// same FROM. The hashes must differ.
+	r1 := &fakeResolver{results: map[string]string{"golang:1.25|": "index.docker.io/library/golang@sha256:aaa"}}
+	r2 := &fakeResolver{results: map[string]string{"golang:1.25|": "index.docker.io/library/golang@sha256:bbb"}}
+
+	opts.BaseImageResolver = r1
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute r1: %v", err)
+	}
+
+	opts.BaseImageResolver = r2
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute r2: %v", err)
+	}
+
+	if h1 == h2 {
+		t.Error("a different resolved FROM digest must change the hash (this is the whole point of #44)")
+	}
+}
+
+func TestCompute_BaseImage_PerComputeCacheDeduplicates(t *testing.T) {
+	// Three stages, all rooted at the same base image. The resolver must
+	// only be called ONCE thanks to the per-Compute cache, not three times.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": `FROM alpine:3.20 AS deps
+RUN echo deps
+
+FROM alpine:3.20 AS builder
+RUN echo build
+
+FROM alpine:3.20
+RUN echo runtime
+`,
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"alpine:3.20|": "index.docker.io/library/alpine@sha256:cafe",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: baseimage.NewCachingResolver(resolver),
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1 (per-Compute cache should deduplicate)", c)
+	}
+}
+
+func TestCompute_BaseImage_StageRefDoesNotInvokeResolver(t *testing.T) {
+	// Second FROM is a stage reference; only the first FROM should hit the
+	// resolver.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": `FROM golang:1.25 AS builder
+RUN go version
+
+FROM builder
+RUN echo "extending the same stage"
+`,
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"golang:1.25|": "index.docker.io/library/golang@sha256:aaa",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1 (the FROM builder line is a stage ref, not a registry image)", c)
+	}
+}
+
+func TestCompute_BaseImage_PinnedDigestSkipsResolver(t *testing.T) {
+	// FROM <repo>@sha256:... is already canonical; the resolver must not be
+	// invoked. We pass a fakeResolver that returns an error if invoked, so a
+	// successful Compute proves the short-circuit fired.
+	const pinned = "alpine@sha256:1304f174557314a7ed9eddb4eab12fed12cb0cd9809e4c28f29af86979a3c870"
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM " + pinned + "\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		err: errors.New("resolver should not be invoked for a pinned reference"),
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 0 {
+		t.Errorf("resolver.calls = %d, want 0 (pinned digest must short-circuit)", c)
+	}
+}
+
+func TestCompute_BaseImage_ScratchDoesNotInvokeResolver(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM scratch\nCOPY app /\n",
+		"app":        "binary content\n",
+	})
+	resolver := &fakeResolver{
+		err: errors.New("resolver should not be invoked for scratch"),
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 0 {
+		t.Errorf("resolver.calls = %d, want 0 (FROM scratch must short-circuit)", c)
+	}
+}
+
+func TestCompute_BaseImage_PlatformAffectsHash(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM alpine:3.20\n",
+	})
+
+	// Same image, different platforms — the resolver returns different
+	// digests for each. The hashes must differ.
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"alpine:3.20|linux/amd64": "index.docker.io/library/alpine@sha256:amd64aaa",
+			"alpine:3.20|linux/arm64": "index.docker.io/library/alpine@sha256:arm64bbb",
+		},
+	}
+
+	opts1 := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	// Force the platform via a Dockerfile rewrite — easier than rigging up a
+	// CLI flag in the test, and exercises the same parser path.
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM --platform=linux/amd64 alpine:3.20\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h1, err := hasher.Compute(opts1)
+	if err != nil {
+		t.Fatalf("Compute amd64: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM --platform=linux/arm64 alpine:3.20\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts1)
+	if err != nil {
+		t.Fatalf("Compute arm64: %v", err)
+	}
+
+	if h1 == h2 {
+		t.Error("--platform=linux/amd64 vs --platform=linux/arm64 must produce different hashes when the resolver returns different digests")
+	}
+}
+
+func TestCompute_BaseImage_ResolverErrorPropagates(t *testing.T) {
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM golang:1.25\n",
+	})
+	resolver := &fakeResolver{
+		err: errors.New("synthetic resolver failure"),
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	_, err := hasher.Compute(opts)
+	if err == nil {
+		t.Fatal("expected an error from Compute when the resolver fails")
+	}
+}
+
+func TestCompute_BaseImage_PreFromArgDefaultExpands(t *testing.T) {
+	// ARG declared (with a default) BEFORE the first FROM is in scope for
+	// FROM expressions per the Dockerfile spec. The resolver must be called
+	// with the expanded value, not the literal "${BASE}".
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "ARG BASE=alpine:3.20\nFROM ${BASE}\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"alpine:3.20|": "index.docker.io/library/alpine@sha256:expanded",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1 (ARG default should expand and trigger resolution)", c)
+	}
+}
+
+func TestCompute_BaseImage_PreFromArgDefaultBareSyntax(t *testing.T) {
+	// Dockerfile spec allows the bare "$BASE" form (no braces) too.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "ARG BASE=alpine:3.20\nFROM $BASE\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"alpine:3.20|": "index.docker.io/library/alpine@sha256:expanded",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1 (bare $BASE should expand same as ${BASE})", c)
+	}
+}
+
+func TestCompute_BaseImage_CallerArgOverridesDefault(t *testing.T) {
+	// Caller-supplied build args win over the parser's pre-FROM ARG
+	// defaults: an --build-arg BASE=alpine:3.21 must override
+	// "ARG BASE=alpine:3.20" inside the Dockerfile.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "ARG BASE=alpine:3.20\nFROM ${BASE}\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"alpine:3.20|": "index.docker.io/library/alpine@sha256:default",
+			"alpine:3.21|": "index.docker.io/library/alpine@sha256:override",
+		},
+	}
+
+	// Without an override: hash uses the default.
+	h1, err := hasher.Compute(hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BuildArgs:         map[string]string{"BASE": "alpine:3.20"},
+		BaseImageResolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("Compute default: %v", err)
+	}
+
+	// With an override: hash uses the overridden value.
+	h2, err := hasher.Compute(hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BuildArgs:         map[string]string{"BASE": "alpine:3.21"},
+		BaseImageResolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("Compute override: %v", err)
+	}
+
+	if h1 == h2 {
+		t.Error("a caller --build-arg override should change the hash compared to the ARG default")
+	}
+}
+
+func TestCompute_BaseImage_MultipleVariablesInOneRef(t *testing.T) {
+	// "${REPO}/${IMG}:${TAG}" must be fully expanded before resolution.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "ARG REPO=quay.io\nARG IMG=podman/stable\nARG TAG=latest\nFROM ${REPO}/${IMG}:${TAG}\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"quay.io/podman/stable:latest|": "quay.io/podman/stable@sha256:abc",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1 (multi-var FROM should expand and resolve once)", c)
+	}
+}
+
+func TestCompute_BaseImage_PinnedDigestViaArgExpansion(t *testing.T) {
+	// ARG BASE=<digest-pinned> + FROM ${BASE} should canonicalize the
+	// expanded reference offline (no resolver call) just like a literal
+	// pinned-digest FROM line would.
+	const pinned = "alpine@sha256:1304f174557314a7ed9eddb4eab12fed12cb0cd9809e4c28f29af86979a3c870"
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "ARG BASE=" + pinned + "\nFROM ${BASE}\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		err: errors.New("resolver must not be invoked for an expanded pinned-digest reference"),
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 0 {
+		t.Errorf("resolver.calls = %d, want 0", c)
+	}
+}
+
+func TestCompute_BaseImage_StageRefViaArgExpansion(t *testing.T) {
+	// ARG that resolves to a stage alias must be detected as a stage
+	// reference, not sent to the registry resolver.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": `ARG BASE=builder
+FROM golang:1.25 AS builder
+RUN go version
+
+FROM ${BASE}
+RUN echo "extending the same stage via ARG"
+`,
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"golang:1.25|": "index.docker.io/library/golang@sha256:aaa",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1 (ARG that expands to a stage alias should not hit the resolver)", c)
+	}
+}
+
+func TestCompute_BaseImage_TrulyUnresolvableImageFallsBack(t *testing.T) {
+	// FROM references an ARG that has neither a Dockerfile default nor a
+	// caller-supplied value. The hash run must not fail; the contribution
+	// becomes a literal "unexpanded:" entry that still discriminates by
+	// the partially-expanded text.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ${MISSING}\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		err: errors.New("resolver must not be invoked when the image text still contains an unresolved variable"),
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute should not fail on a truly-unresolvable ARG: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 0 {
+		t.Errorf("resolver.calls = %d, want 0", c)
+	}
+
+	// Two different unresolvable expressions still produce different
+	// hashes via the section-1 Dockerfile content.
+	dir2 := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ${OTHER}\nRUN echo hi\n",
+	})
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute opts: %v", err)
+	}
+	h2, err := hasher.Compute(hasher.Options{
+		DockerfilePath:    filepath.Join(dir2, "Dockerfile"),
+		ContextDir:        dir2,
+		BaseImageResolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("Compute opts2: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("two different unresolvable FROM expressions should still produce different hashes via section 1")
+	}
+}
+
+func TestCompute_BaseImage_BuildPlatformDropsToIndexDigest(t *testing.T) {
+	// FROM --platform=$BUILDPLATFORM alpine:3.20 must NOT crash. The
+	// $BUILDPLATFORM reference is "no caller-supplied platform" for
+	// docker-hash purposes — we resolve to the multi-arch index digest
+	// (passing "" to the resolver) rather than the platform-specific
+	// manifest, which keeps the hash stable across runner architectures.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM --platform=$BUILDPLATFORM alpine:3.20\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			// Note: empty Platform key (not "linux/amd64" or anything else).
+			"alpine:3.20|": "index.docker.io/library/alpine@sha256:index",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1", c)
+	}
+}
+
+func TestCompute_BaseImage_TargetPlatformWithCallerArgIsHonoured(t *testing.T) {
+	// FROM --platform=$TARGETPLATFORM with a caller-supplied
+	// --build-arg TARGETPLATFORM=linux/arm64 should resolve against the
+	// arm64 manifest, not drop to the index digest.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM --platform=$TARGETPLATFORM alpine:3.20\nRUN echo hi\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"alpine:3.20|linux/arm64": "index.docker.io/library/alpine@sha256:arm64",
+		},
+	}
+	opts := hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BuildArgs:         map[string]string{"TARGETPLATFORM": "linux/arm64"},
+		BaseImageResolver: resolver,
+	}
+	if _, err := hasher.Compute(opts); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if c := resolver.calls.Load(); c != 1 {
+		t.Errorf("resolver.calls = %d, want 1", c)
+	}
+}
+
+func TestCompute_BaseImage_BuildPlatformWithCallerArgChangesHash(t *testing.T) {
+	// Two runs of the same Dockerfile, with different caller-supplied
+	// values for $BUILDPLATFORM, must produce different hashes (because
+	// the resolver returns a different per-platform digest).
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM --platform=$BUILDPLATFORM alpine:3.20\n",
+	})
+	resolver := &fakeResolver{
+		results: map[string]string{
+			"alpine:3.20|linux/amd64": "index.docker.io/library/alpine@sha256:amd64",
+			"alpine:3.20|linux/arm64": "index.docker.io/library/alpine@sha256:arm64",
+		},
+	}
+	h1, err := hasher.Compute(hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BuildArgs:         map[string]string{"BUILDPLATFORM": "linux/amd64"},
+		BaseImageResolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("Compute amd64: %v", err)
+	}
+	h2, err := hasher.Compute(hasher.Options{
+		DockerfilePath:    filepath.Join(dir, "Dockerfile"),
+		ContextDir:        dir,
+		BuildArgs:         map[string]string{"BUILDPLATFORM": "linux/arm64"},
+		BaseImageResolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("Compute arm64: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("different caller-supplied $BUILDPLATFORM values must produce different hashes")
+	}
+}
+
+func TestCompute_BaseImage_NoResolverHashesLiteralText(t *testing.T) {
+	// With BaseImageResolver=nil, plain-tag FROM lines must hash their
+	// literal text (the v0.1.x backward-compat path). Two different tags
+	// must produce different hashes; identical tags must produce identical
+	// hashes; and the hash must be stable across runs.
+	dir1 := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM golang:1.25\n",
+	})
+	dir2 := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM golang:1.26\n",
+	})
+
+	h1, err := hasher.Compute(hasher.Options{DockerfilePath: filepath.Join(dir1, "Dockerfile"), ContextDir: dir1})
+	if err != nil {
+		t.Fatalf("Compute dir1: %v", err)
+	}
+	h2, err := hasher.Compute(hasher.Options{DockerfilePath: filepath.Join(dir2, "Dockerfile"), ContextDir: dir2})
+	if err != nil {
+		t.Fatalf("Compute dir2: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("different FROM tags should produce different hashes even without a resolver")
+	}
+
+	// Stability: re-compute dir1 and expect the same hash.
+	h1again, err := hasher.Compute(hasher.Options{DockerfilePath: filepath.Join(dir1, "Dockerfile"), ContextDir: dir1})
+	if err != nil {
+		t.Fatalf("Compute dir1 again: %v", err)
+	}
+	if h1 != h1again {
+		t.Error("hash should be stable across runs when no resolver is configured")
+	}
+}
+
+// ---- COPY/ADD source-must-exist tests (#51) ----
+
 func TestCompute_MissingLiteralSourceErrors(t *testing.T) {
 	dir := buildTestContext(t, map[string]string{
 		"Dockerfile": "FROM ubuntu:22.04\nCOPY missing.txt /app/\n",
 	})
-
 	_, err := hasher.Compute(hasher.Options{
 		DockerfilePath: filepath.Join(dir, "Dockerfile"),
 		ContextDir:     dir,
@@ -697,7 +1279,6 @@ func TestCompute_MissingGlobErrors(t *testing.T) {
 		"Dockerfile": "FROM ubuntu:22.04\nCOPY *.nope /app/\n",
 		"other.txt":  "some file\n",
 	})
-
 	_, err := hasher.Compute(hasher.Options{
 		DockerfilePath: filepath.Join(dir, "Dockerfile"),
 		ContextDir:     dir,
@@ -714,7 +1295,6 @@ func TestCompute_DirectoryThatDoesNotExistErrors(t *testing.T) {
 	dir := buildTestContext(t, map[string]string{
 		"Dockerfile": "FROM ubuntu:22.04\nCOPY src/ /app/\n",
 	})
-
 	_, err := hasher.Compute(hasher.Options{
 		DockerfilePath: filepath.Join(dir, "Dockerfile"),
 		ContextDir:     dir,
