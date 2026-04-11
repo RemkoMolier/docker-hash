@@ -12,6 +12,11 @@ The hash changes whenever:
 This makes `docker-hash` useful for cache-busting, change detection and
 deterministic CI pipelines.
 
+> **Pre-v1 notice:** The hash format is not stable before v1.0.0. Upgrades
+> may produce different hashes for unchanged inputs (for example, once
+> `.dockerignore` filtering lands). Do not pin downstream tooling on specific
+> hash values across upgrades until v1.0.0.
+
 ---
 
 ## Installation
