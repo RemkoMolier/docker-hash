@@ -48,6 +48,54 @@ go build -o docker-hash ./cmd/docker-hash/
 
 ---
 
+## Use as an OCI image (GitLab CI and container-native CI)
+
+`docker-hash` is published as a multi-arch OCI image to the GitHub Container Registry, making it
+easy to consume in GitLab CI and any other container-native CI system where jobs already run
+inside an image.
+
+Published image: `ghcr.io/remkomolier/docker-hash`
+
+### GitLab CI example
+
+```yaml
+compute_hash:
+  image: ghcr.io/remkomolier/docker-hash:v0.1.0
+  script:
+    - docker-hash --file Dockerfile --context .
+```
+
+### Generic container usage
+
+```sh
+docker run --rm \
+  -v "$PWD:/work" \
+  -w /work \
+  ghcr.io/remkomolier/docker-hash:v0.1.0 \
+  --file Dockerfile --context .
+```
+
+### Image tag strategy
+
+| Tag | Updates on | Recommended for |
+|---|---|---|
+| `vX.Y.Z` (e.g. `v0.1.0`) | Never — immutable | **Production / pinned deployments** |
+| `vX.Y` (e.g. `v0.1`) | Every patch release in that minor | Patch-level auto-updates |
+| `vX` (e.g. `v0`) | Every non-pre-release in that major | Minor-level auto-updates |
+| `latest` | Every non-pre-release | Quick local experiments only |
+
+Pre-release tags (e.g. `v0.2.0-rc1`) are published as `vX.Y.Z` only; the floating
+`vX.Y`, `vX`, and `latest` tags are not updated for pre-releases.
+
+**Recommendation:** pin to `vX.Y.Z` in CI pipelines to get fully reproducible builds.
+
+### Supported platforms
+
+- `linux/amd64`
+- `linux/arm64`
+
+---
+
 ## Use as a GitHub Action
 
 `docker-hash` is also published as a reusable composite GitHub Action so you can compute the hash directly inside a workflow without installing the CLI by hand.
