@@ -21,11 +21,29 @@ deterministic CI pipelines.
 
 ## Installation
 
+### From releases (Linux / macOS)
+
+Pre-built binaries for Linux and macOS (amd64 and arm64) are available on the
+[GitHub Releases page](https://github.com/RemkoMolier/docker-hash/releases).
+
+```sh
+# Replace vX.Y.Z and linux_amd64 with the version and platform you need.
+curl -sSL https://github.com/RemkoMolier/docker-hash/releases/download/vX.Y.Z/docker-hash_vX.Y.Z_linux_amd64.tar.gz \
+  | tar -xz docker-hash
+sudo mv docker-hash /usr/local/bin/
+```
+
+> **macOS note:** On first run macOS may block the binary because it is not
+> code-signed. Right-click → Open, or run
+> `xattr -d com.apple.quarantine ./docker-hash` to bypass the quarantine.
+
+### Using `go install`
+
 ```sh
 go install github.com/RemkoMolier/docker-hash/cmd/docker-hash@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```sh
 git clone https://github.com/RemkoMolier/docker-hash.git
