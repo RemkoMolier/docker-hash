@@ -3,6 +3,7 @@ package baseimage_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -35,7 +36,7 @@ func TestIsScratch(t *testing.T) {
 func TestIsAlreadyPinned(t *testing.T) {
 	const validDigest = "alpine@sha256:1304f174557314a7ed9eddb4eab12fed12cb0cd9809e4c28f29af86979a3c870"
 	cases := map[string]bool{
-		validDigest:                          true,
+		validDigest: true,
 		"library/alpine@sha256:" + strings.Repeat("a", 64): true,
 		"alpine":          false,
 		"alpine:latest":   false,
@@ -72,9 +73,9 @@ func (f *fakeResolver) Resolve(_ context.Context, ref baseimage.Reference) (stri
 func TestCachingResolver_DeduplicatesByImageAndPlatform(t *testing.T) {
 	inner := &fakeResolver{
 		results: map[string]string{
-			"alpine|":               "index.docker.io/library/alpine@sha256:aaa",
-			"alpine|linux/amd64":    "index.docker.io/library/alpine@sha256:bbb",
-			"golang:1.25|":          "index.docker.io/library/golang@sha256:ccc",
+			"alpine|":            "index.docker.io/library/alpine@sha256:aaa",
+			"alpine|linux/amd64": "index.docker.io/library/alpine@sha256:bbb",
+			"golang:1.25|":       "index.docker.io/library/golang@sha256:ccc",
 		},
 	}
 	cache := baseimage.NewCachingResolver(inner)
@@ -190,5 +191,46 @@ func TestRemoteResolver_AgainstFakeRegistry_404IsLoud(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resolve") {
 		t.Errorf("expected error to be wrapped with 'resolve' context, got: %v", err)
+	}
+}
+
+// countingTransport wraps an inner http.RoundTripper and counts every
+// request that flows through it. Used by TestRemoteResolver_HonoursTransport
+// to prove the Transport field is actually threaded through to
+// go-containerregistry's HTTP client rather than being silently ignored.
+type countingTransport struct {
+	inner http.RoundTripper
+	calls atomic.Int32
+}
+
+func (c *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	return c.inner.RoundTrip(req)
+}
+
+// TestRemoteResolver_HonoursTransport verifies that a non-nil Transport on
+// RemoteResolver is actually used by go-containerregistry. This is the
+// extension point that pkg/registrymirrors plugs into for mirror routing,
+// so silently dropping Transport would defeat the entire mirror feature.
+func TestRemoteResolver_HonoursTransport(t *testing.T) {
+	srv := httptest.NewServer(registry.New())
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+
+	ct := &countingTransport{inner: http.DefaultTransport}
+	r := &baseimage.RemoteResolver{Transport: ct}
+
+	// The image doesn't exist on the fake registry, so we expect an error;
+	// what we care about is that ct saw at least one request along the way.
+	_, _ = r.Resolve(context.Background(), baseimage.Reference{
+		Image: u.Host + "/test/nonexistent:v1",
+	})
+
+	if got := ct.calls.Load(); got == 0 {
+		t.Fatal("expected RemoteResolver.Transport to receive at least one request, got 0")
 	}
 }

@@ -380,131 +380,156 @@ func Parse(r io.Reader) (*ParseResult, error) {
 		StageAliases:       make(map[string]struct{}),
 	}
 
-	seenArgs := make(map[string]struct{})
-	seenFirstFrom := false
-	// currentStageDecls tracks the ordered list of ARG and ENV declarations
-	// that have appeared in the current FROM stage so far. It resets to nil
-	// at every FROM and is snapshot-copied onto each CopySource at the
-	// COPY/ADD position. Pre-FROM ARGs do NOT enter this list — they live
-	// in pr.PreFromArgDefaults and are inherited only via an in-stage
-	// "ARG NAME" redeclaration without a default.
-	var currentStageDecls []Decl
+	st := &parseState{
+		seenArgs: make(map[string]struct{}),
+		// currentStageDecls tracks the ordered list of ARG and ENV
+		// declarations that have appeared in the current FROM stage so
+		// far. It resets to nil at every FROM and is snapshot-copied
+		// onto each CopySource at the COPY/ADD position. Pre-FROM ARGs
+		// do NOT enter this list — they live in pr.PreFromArgDefaults
+		// and are inherited only via an in-stage "ARG NAME"
+		// redeclaration without a default.
+	}
 
 	for _, node := range result.AST.Children {
 		switch strings.ToLower(node.Value) {
 		case command.Copy, command.Add:
-			cs := parseCopyNode(node)
-			// Snapshot the current stage's visible declarations so the
-			// hasher can build a per-CopySource expansion lookup later.
-			if len(currentStageDecls) > 0 {
-				cs.Scope = make([]Decl, len(currentStageDecls))
-				copy(cs.Scope, currentStageDecls)
-			}
-			pr.CopySources = append(pr.CopySources, cs)
+			st.handleCopyOrAdd(node, pr)
 		case command.Arg:
-			if node.Next != nil {
-				// ARG name or ARG name=default — extract the name and the
-				// optional default value.
-				argExpr := node.Next.Value
-				name := argExpr
-				value := ""
-				hasDefault := false
-				if idx := strings.Index(argExpr, "="); idx >= 0 {
-					name = argExpr[:idx]
-					value = argExpr[idx+1:]
-					hasDefault = true
-				}
-				// Deduplicate: the same ARG name can appear in multiple stages.
-				if _, ok := seenArgs[name]; !ok {
-					seenArgs[name] = struct{}{}
-					pr.BuildArgNames = append(pr.BuildArgNames, name)
-				}
-				// Capture pre-FROM ARG declarations: only ARGs declared
-				// BEFORE the first FROM line are usable in subsequent FROM
-				// expressions per the Dockerfile spec. The first declaration
-				// wins; later redeclarations are ignored.
-				//
-				// PreFromArgNames records every pre-FROM ARG name (with or
-				// without a default) so the hasher can gate FROM-expansion
-				// lookups by it. PreFromArgDefaults records only the names
-				// that supplied an explicit default, so the lookup has
-				// something to fall back to when the caller did not pass a
-				// --build-arg for that name.
-				if !seenFirstFrom {
-					pr.PreFromArgNames[name] = struct{}{}
-					if hasDefault {
-						if _, exists := pr.PreFromArgDefaults[name]; !exists {
-							pr.PreFromArgDefaults[name] = value
-						}
-					}
-				}
-				// Stage-local ARG declarations are appended to the current
-				// stage's scope. The Dockerfile spec says these are visible
-				// to subsequent instructions (COPY, ADD, RUN, etc.) within
-				// the same stage.
-				if seenFirstFrom {
-					currentStageDecls = append(currentStageDecls, Decl{
-						Kind:       DeclARG,
-						Name:       name,
-						Value:      value,
-						HasDefault: hasDefault,
-					})
-				}
-			}
+			st.handleArg(node, pr)
 		case command.Env:
-			// ENV NAME=value (kv form) and "ENV NAME value" (legacy form)
-			// are both supported. The buildkit AST encodes the chain as
-			// triples: (key, value, separator). The separator is "=" for the
-			// kv form and "" for the legacy form, and is repeated after each
-			// pair when an instruction binds multiple variables, e.g.
-			//   ENV A=1 B=2 → [A, 1, =, B, 2, =]
-			//   ENV LEGACY value → [LEGACY, value, ""]
-			//
-			// We collect every triple. Skipping pre-FROM ENVs matches the
-			// ARG handling: declarations outside any stage cannot be visible
-			// to a COPY/ADD inside a later stage.
-			if !seenFirstFrom {
-				break
-			}
-			for n := node.Next; n != nil; {
-				if n.Next == nil {
-					break // malformed: dangling key with no value/separator
-				}
-				key := n.Value
-				value := n.Next.Value
-				// Advance past key and value; the separator (if present)
-				// is one more node down the chain.
-				next := n.Next.Next
-				if next != nil {
-					next = next.Next
-				}
-				if key != "" {
-					currentStageDecls = append(currentStageDecls, Decl{
-						Kind:  DeclENV,
-						Name:  key,
-						Value: value,
-					})
-				}
-				n = next
-			}
+			st.handleEnv(node)
 		case command.From:
-			seenFirstFrom = true
-			// New stage — clear the visible-decls list. The new stage
-			// starts with no inherited ARG/ENV state (per Dockerfile spec
-			// the only inheritance is via in-stage "ARG NAME" redeclaration
-			// of a pre-FROM ARG).
-			currentStageDecls = nil
-			ref := parseFromNode(node, pr.StageAliases)
-			pr.FromRefs = append(pr.FromRefs, ref)
-			// Record this stage alias so any later "FROM <alias>" line is
-			// detected as a stage reference rather than a registry image.
-			if ref.Stage != "" {
-				pr.StageAliases[ref.Stage] = struct{}{}
-			}
+			st.handleFrom(node, pr)
 		}
 	}
 
 	return pr, nil
+}
+
+// parseState is the in-flight bookkeeping for a single Parse call. It
+// exists so that the per-instruction handlers can decompose into focused
+// methods without each one having to thread the same four pieces of
+// state back through its signature.
+type parseState struct {
+	seenArgs          map[string]struct{}
+	seenFirstFrom     bool
+	currentStageDecls []Decl
+}
+
+// handleCopyOrAdd snapshots the current stage's visible declarations
+// onto a parsed COPY/ADD instruction so the hasher can build a
+// per-CopySource expansion lookup later.
+func (st *parseState) handleCopyOrAdd(node *parser.Node, pr *ParseResult) {
+	cs := parseCopyNode(node)
+	if len(st.currentStageDecls) > 0 {
+		cs.Scope = make([]Decl, len(st.currentStageDecls))
+		copy(cs.Scope, st.currentStageDecls)
+	}
+	pr.CopySources = append(pr.CopySources, cs)
+}
+
+// handleArg processes an `ARG name` or `ARG name=default` instruction.
+// Pre-FROM ARGs are recorded in pr.PreFromArgNames /
+// pr.PreFromArgDefaults so the hasher can gate FROM-expansion lookups by
+// them; in-stage ARGs are appended to the current stage's scope. The
+// caller-facing pr.BuildArgNames list is deduplicated across stages.
+func (st *parseState) handleArg(node *parser.Node, pr *ParseResult) {
+	if node.Next == nil {
+		return
+	}
+	argExpr := node.Next.Value
+	name := argExpr
+	value := ""
+	hasDefault := false
+	if idx := strings.Index(argExpr, "="); idx >= 0 {
+		name = argExpr[:idx]
+		value = argExpr[idx+1:]
+		hasDefault = true
+	}
+	// Deduplicate: the same ARG name can appear in multiple stages.
+	if _, ok := st.seenArgs[name]; !ok {
+		st.seenArgs[name] = struct{}{}
+		pr.BuildArgNames = append(pr.BuildArgNames, name)
+	}
+	// Capture pre-FROM ARG declarations: only ARGs declared BEFORE the
+	// first FROM line are usable in subsequent FROM expressions per the
+	// Dockerfile spec. The first declaration wins; later redeclarations
+	// are ignored.
+	if !st.seenFirstFrom {
+		pr.PreFromArgNames[name] = struct{}{}
+		if hasDefault {
+			if _, exists := pr.PreFromArgDefaults[name]; !exists {
+				pr.PreFromArgDefaults[name] = value
+			}
+		}
+		return
+	}
+	// Stage-local ARG declarations are appended to the current stage's
+	// scope. The Dockerfile spec says these are visible to subsequent
+	// instructions (COPY, ADD, RUN, etc.) within the same stage.
+	st.currentStageDecls = append(st.currentStageDecls, Decl{
+		Kind:       DeclARG,
+		Name:       name,
+		Value:      value,
+		HasDefault: hasDefault,
+	})
+}
+
+// handleEnv processes an in-stage ENV instruction. ENV NAME=value (kv
+// form) and "ENV NAME value" (legacy form) are both supported. The
+// buildkit AST encodes the chain as triples: (key, value, separator).
+// The separator is "=" for the kv form and "" for the legacy form, and
+// is repeated after each pair when an instruction binds multiple
+// variables, e.g.
+//
+//	ENV A=1 B=2  → [A, 1, =, B, 2, =]
+//	ENV LEGACY value → [LEGACY, value, ""]
+//
+// Pre-FROM ENVs are skipped, matching the ARG handling: declarations
+// outside any stage cannot be visible to a COPY/ADD inside a later
+// stage.
+func (st *parseState) handleEnv(node *parser.Node) {
+	if !st.seenFirstFrom {
+		return
+	}
+	for n := node.Next; n != nil; {
+		if n.Next == nil {
+			break // malformed: dangling key with no value/separator
+		}
+		key := n.Value
+		value := n.Next.Value
+		// Advance past key and value; the separator (if present) is
+		// one more node down the chain.
+		next := n.Next.Next
+		if next != nil {
+			next = next.Next
+		}
+		if key != "" {
+			st.currentStageDecls = append(st.currentStageDecls, Decl{
+				Kind:  DeclENV,
+				Name:  key,
+				Value: value,
+			})
+		}
+		n = next
+	}
+}
+
+// handleFrom processes a FROM instruction. The current stage's visible
+// declarations are cleared because the new stage starts with no
+// inherited ARG/ENV state (per the Dockerfile spec the only inheritance
+// is via in-stage "ARG NAME" redeclaration of a pre-FROM ARG).
+func (st *parseState) handleFrom(node *parser.Node, pr *ParseResult) {
+	st.seenFirstFrom = true
+	st.currentStageDecls = nil
+	ref := parseFromNode(node, pr.StageAliases)
+	pr.FromRefs = append(pr.FromRefs, ref)
+	// Record this stage alias so any later "FROM <alias>" line is
+	// detected as a stage reference rather than a registry image.
+	if ref.Stage != "" {
+		pr.StageAliases[ref.Stage] = struct{}{}
+	}
 }
 
 // parseCopyNode extracts CopySource information from a COPY/ADD AST node.

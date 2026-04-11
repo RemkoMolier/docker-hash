@@ -35,6 +35,7 @@ package baseimage
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 
@@ -132,6 +133,16 @@ type RemoteResolver struct {
 	// $REGISTRY_AUTH_FILE + $XDG_RUNTIME_DIR/containers/auth.json + cloud
 	// helpers).
 	Keychain authn.Keychain
+
+	// Transport, if non-nil, is the http.RoundTripper that
+	// go-containerregistry will use for all registry requests. This is the
+	// extension point for registry mirror routing: callers wrap their base
+	// transport with a mirror-aware RoundTripper (e.g. from
+	// pkg/registrymirrors) and assign it here, and the resolver becomes
+	// transparent to the mirror layer. Nil means the go-containerregistry
+	// default transport (http.DefaultTransport with sensible registry
+	// retry/timeout policy applied on top).
+	Transport http.RoundTripper
 }
 
 // Resolve fetches the digest for the given reference and returns the
@@ -162,6 +173,9 @@ func (r *RemoteResolver) Resolve(ctx context.Context, ref Reference) (string, er
 	opts := []remote.Option{
 		remote.WithContext(ctx),
 		remote.WithAuthFromKeychain(keychain),
+	}
+	if r.Transport != nil {
+		opts = append(opts, remote.WithTransport(r.Transport))
 	}
 
 	// Platform: explicit on the FROM line wins; otherwise CLI override;

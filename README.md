@@ -225,6 +225,7 @@ For a workflow that needs a specific platform's manifest:
 | `no-expand-args` | `"false"` | Set to `"true"` to disable ARG/ENV expansion in `COPY`/`ADD` paths, `--from=` stage names and `FROM` references. Causes `FROM ${VAR}` lines to fail rather than be silently ignored. Combine with `no-resolve-from` for bit-for-bit v0.1.x output. |
 | `platform` | `""` | Force a specific platform (e.g. `linux/amd64`) when resolving multi-arch base images. Empty hashes the multi-arch index digest. Per-FROM `--platform=` flags in the Dockerfile take precedence. |
 | `auth-file` | `""` | Path to a registry auth file (Docker `config.json` or Podman/Skopeo `auth.json` format). Same semantic as the Skopeo/Podman/Buildah `--authfile` flag. Most workflows will not need this — `actions/checkout` plus `docker/login-action` already populate the default Docker config. |
+| `registries-conf` | `""` | Path to a Podman-style `registries.conf` TOML file describing per-registry mirrors. When set (and `no-resolve-from` is not `"true"`), FROM digest resolution is routed through the configured mirrors with fallback to the upstream on connection error or HTTP 5xx. The file uses the same `[[registry]]` / `[[registry.mirror]]` schema Podman, Buildah, Skopeo and CRI-O already consume; an existing `/etc/containers/registries.conf` works as-is. There is no auto-discovery — the path must be provided. |
 
 ### Outputs
 
@@ -255,6 +256,7 @@ Flags:
       --no-expand-args             Disable ARG/ENV expansion in COPY/ADD and FROM; fail on FROM ${VAR}
       --platform    <os/arch>      Force a specific platform when resolving FROM digests
       --auth-file   <path>         Registry auth file path (Docker / Podman / Skopeo format)
+      --registries-conf <path>     Podman-style registries.conf for per-registry mirror routing
   -v, --version                    Print version information and exit
 ```
 
@@ -282,6 +284,12 @@ docker-hash --platform=linux/amd64
 
 # Use a specific registry auth file (matches Skopeo/Podman/Buildah --authfile).
 docker-hash --auth-file ~/.config/containers/auth.json
+
+# Route FROM digest resolution through corporate mirrors defined in a
+# Podman-style registries.conf. The hash output is unchanged — mirrors
+# are an HTTP-layer concern, the canonical upstream image name is what
+# feeds the hash.
+docker-hash --registries-conf /etc/containers/registries.conf
 ```
 
 The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
@@ -412,13 +420,53 @@ Authentication flows through `google/go-containerregistry`'s default keychain, w
 Cloud-provider credential helpers (ECR, GCR, ACR) are picked up automatically when the corresponding helper binaries are on `PATH`.
 The `--auth-file=<path>` flag is the explicit equivalent of Skopeo's, Podman's, and Buildah's `--authfile` flag — it sets `REGISTRY_AUTH_FILE` for the current run.
 
+#### Registry mirrors
+
+Corporate environments often front public registries with an internal mirror (Artifactory, Harbor, ECR pull-through cache, …).
+`docker-hash` can route FROM digest resolution through such mirrors via `--registries-conf=<path>`, which loads a Podman-style `registries.conf` TOML file:
+
+```toml
+[[registry]]
+prefix = "docker.io"
+location = "registry-1.docker.io"
+
+[[registry.mirror]]
+location = "artifactory.corp/dockerhub"
+
+[[registry]]
+prefix = "ghcr.io"
+
+[[registry.mirror]]
+location = "artifactory.corp/ghcr"
+```
+
+The schema is the same one Podman, Buildah, Skopeo and CRI-O already consume, so an existing `/etc/containers/registries.conf` can be reused as-is — there is intentionally no second source of truth to maintain.
+
+Routing rules:
+
+- A request to a registry listed in `prefix` (or `location` if `prefix` is omitted) is rewritten to each configured mirror in declaration order.
+- If a mirror returns an HTTP 5xx or fails to connect, the next mirror is tried; if every mirror fails the request falls back to the original upstream URL, so a misconfigured mirror degrades gracefully instead of breaking the build.
+- The hash output is **unchanged** by mirror routing.
+  Mirrors are an HTTP-layer concern: the canonical upstream image name (e.g. `index.docker.io/library/alpine@sha256:...`) is what feeds the hash, regardless of which mirror actually served the manifest.
+  Two runners with different mirror configs produce identical hashes for the same image content.
+- Per-mirror `insecure = true` enables HTTP and disables TLS verification for that mirror only.
+  A WARN line is logged for each request routed through such a mirror so the looser security posture is visible in CI logs.
+
+There is intentionally **no auto-discovery**: the path must be passed explicitly via `--registries-conf=<path>`.
+This avoids "why is my build pulling from a mirror I forgot existed" surprises and keeps the resolver behaviour reproducible across machines.
+
+When `--no-resolve-from` is set, `--registries-conf` is silently ignored — there are no registry calls to route in the first place.
+
+The following Podman fields are accepted but currently **ignored**: `unqualified-search-registries`, registry-level `blocked`, and `mirror-by-digest-only`.
+Adding support for any of them is a future enhancement; for now they parse without error so an existing Podman config does not need editing.
+
 #### Failure modes
 
 - **Network unreachable**: the run fails with the offending image name in the error message.
    Use `--no-resolve-from` for offline runs.
 - **Image not found / 404 / auth missing**: same — fail loud rather than silently fall back, otherwise the determinism story breaks.
-- **Behind a corporate registry mirror**: `HTTPS_PROXY` is honoured at the connection level.
-   Native `containerd` `hosts.toml`-style mirror rewriting is tracked as a follow-up; for now, set the proxy env var or use `--no-resolve-from`.
+- **Behind a corporate registry mirror**: pass a Podman-style `registries.conf` via `--registries-conf=<path>` (see [Registry mirrors](#registry-mirrors) below).
+  `HTTPS_PROXY` is also honoured at the connection level if you only need a flat HTTP proxy.
 
 ### Known limitations
 

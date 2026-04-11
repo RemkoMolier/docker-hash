@@ -3,6 +3,7 @@ module github.com/RemkoMolier/docker-hash
 go 1.25.5
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/google/go-containerregistry v0.20.7
 	github.com/moby/buildkit v0.29.0
 	github.com/moby/patternmatcher v0.6.1

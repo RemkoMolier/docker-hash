@@ -354,8 +354,8 @@ COPY --from=runtime /usr/local/bin/app /
 
 func TestExpandVars(t *testing.T) {
 	defaults := map[string]string{
-		"BASE":   "alpine:3.20",
-		"REPO":   "quay.io",
+		"BASE":    "alpine:3.20",
+		"REPO":    "quay.io",
 		"VARIANT": "stable",
 	}
 	lookup := func(name string) (string, bool) {
