@@ -1,0 +1,41 @@
+# markdownlint-cli2 configuration for docker-hash.
+#
+# Rule reference:    https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+# cli2 config docs:  https://github.com/DavidAnson/markdownlint-cli2#configuration
+# CI integration:    .github/workflows/ci.yml (markdown-lint job)
+
+config:
+  # Inherit all default markdownlint rules.
+  default: true
+
+  # Disable line-length enforcement.
+  #
+  # This repo uses one-sentence-per-line (semantic line breaks) for prose so
+  # diffs only show the sentences that actually changed instead of reflowing
+  # whole paragraphs. Long lines are fine — the rule below enforces the
+  # sentence-per-line convention itself.
+  MD013: false
+
+  # Disable table column alignment enforcement.
+  #
+  # MD060 wants every row's pipe characters to visually line up with the
+  # header. That's a stylistic preference, not a rendering issue, and it
+  # actively hurts diff readability: adding a single row with a wider cell
+  # forces every other row to be re-padded, blowing up the diff. Tables
+  # render correctly in any pipe layout, so we let cells be their natural
+  # width.
+  MD060: false
+
+# Custom rules. Installed by the markdown-lint CI job via `npm install`.
+#
+# - markdownlint-rule-max-one-sentence-per-line: enforces the semantic
+#   line break convention by erroring whenever two sentences appear on
+#   the same line. See the "Markdown style" section in CONTRIBUTING.md
+#   for the rationale.
+customRules:
+  - markdownlint-rule-max-one-sentence-per-line
+
+# Always exclude the local `node_modules` directory that the CI job and
+# any local dev install create when running markdownlint.
+ignores:
+  - "node_modules"

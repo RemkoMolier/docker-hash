@@ -85,3 +85,25 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
+
+  markdown-lint:
+    name: Markdown lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install markdownlint-cli2 + custom rules
+        # Pinned versions match what `.markdownlint-cli2.yaml` expects.
+        # `--no-save` plus a transient `npm init` keeps Node tooling out of
+        # the committed Go repo: nothing is added to the working tree.
+        # Renovate can manage these via a custom regex manager if desired.
+        run: |
+          npm init -y >/dev/null
+          npm install --no-save --silent \
+            markdownlint-cli2@0.22.0 \
+            markdownlint-rule-max-one-sentence-per-line@0.0.2
+      - name: Run markdownlint
+        run: npx markdownlint-cli2 "**/*.md"

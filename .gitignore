@@ -8,3 +8,11 @@
 
 # Go vendor directory
 /vendor/
+
+# Transient files created when running markdownlint-cli2 locally.
+# The markdown-lint CI job uses `npm install --no-save` and then npx,
+# which writes a temporary package.json and node_modules/ into the
+# working tree. Neither should ever be committed.
+/node_modules/
+/package.json
+/package-lock.json
