@@ -121,3 +121,9 @@ go build \
 ├── pkg/dockerfile/    # Dockerfile parser helpers
 └── pkg/hasher/        # Core hash computation
 ```
+
+---
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 Remko Molier.
