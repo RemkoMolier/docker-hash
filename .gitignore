@@ -1,0 +1,10 @@
+# Binaries
+docker-hash
+*.exe
+*.test
+
+# Build output
+/dist/
+
+# Go workspace
+/vendor/
