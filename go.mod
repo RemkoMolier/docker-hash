@@ -3,13 +3,13 @@ module github.com/RemkoMolier/docker-hash
 go 1.25.5
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/google/go-containerregistry v0.20.7
 	github.com/moby/buildkit v0.29.0
 	github.com/moby/patternmatcher v0.6.1
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect
 	github.com/docker/cli v29.3.1+incompatible // indirect
