@@ -51,8 +51,4 @@ changelog:
   sort: asc
   filters:
     exclude:
-      - "^docs:"
-      - "^chore:"
-      - "^test:"
-      - "^ci:"
-      - "^style:"
+      - "^(docs|chore|test|ci|style)(\\(.*\\))?:"
