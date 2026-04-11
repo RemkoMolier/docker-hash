@@ -673,3 +673,149 @@ func TestCompute_DockerIgnore_DirectoryPattern(t *testing.T) {
 		t.Error("modifying a file inside an ignored directory (node_modules/) should not change the hash")
 	}
 }
+
+// ---- Symlink tests ----
+
+func TestCompute_TopLevelSourceSymlink_FollowsTarget(t *testing.T) {
+	// COPY mylink /app/ where mylink → real.txt: changing real.txt must change the hash.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY mylink /app/\n",
+		"real.txt":   "hello\n",
+	})
+	if err := os.Symlink(filepath.Join(dir, "real.txt"), filepath.Join(dir, "mylink")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("world\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after target change: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("changing the target of a top-level source symlink should change the hash")
+	}
+}
+
+func TestCompute_TopLevelSourceSymlink_Relink(t *testing.T) {
+	// Relinking mylink to a different file with different content must change the hash.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY mylink /app/\n",
+		"target1":    "hello\n",
+		"target2":    "world\n",
+	})
+	if err := os.Symlink(filepath.Join(dir, "target1"), filepath.Join(dir, "mylink")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Relink mylink → target2.
+	if err := os.Remove(filepath.Join(dir, "mylink")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "target2"), filepath.Join(dir, "mylink")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after relink: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("relinking a top-level source symlink to a file with different content should change the hash")
+	}
+}
+
+func TestCompute_TopLevelSourceSymlink_EscapesContextErrors(t *testing.T) {
+	// COPY mylink /app/ where mylink points outside the context must return an error.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY mylink /app/\n",
+	})
+	// Point to /etc/passwd (outside the build context).
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "mylink")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Error("expected an error when a top-level source symlink escapes the build context, got nil")
+	}
+}
+
+func TestCompute_InnerSymlink_TargetStringChanges(t *testing.T) {
+	// COPY src/ /app/ where src/link → a: relinking src/link → b must change the hash.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM ubuntu:22.04\nCOPY src/ /app/\n",
+		"src/a":      "file a\n",
+		"src/b":      "file b\n",
+	})
+	if err := os.Symlink("a", filepath.Join(dir, "src", "link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Relink src/link → b.
+	if err := os.Remove(filepath.Join(dir, "src", "link")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := os.Symlink("b", filepath.Join(dir, "src", "link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after relink: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("relinking an inner symlink (changing the target string) should change the hash")
+	}
+}
+
+func TestCompute_InnerSymlink_TargetContentDoesNotMatter(t *testing.T) {
+	// COPY src/ /app/ where src/link → ../outside: changing ../outside content
+	// must NOT change the hash (inner symlinks are hashed by target string only).
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":   "FROM ubuntu:22.04\nCOPY src/ /app/\n",
+		"src/real.txt": "unchanged\n",
+		"outside":      "original outside\n",
+	})
+	if err := os.Symlink("../outside", filepath.Join(dir, "src", "link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	// Modify outside — the symlink target string is unchanged, so hash must not change.
+	if err := os.WriteFile(filepath.Join(dir, "outside"), []byte("changed outside\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after outside change: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("changing the content of a file pointed to by an inner symlink (but not separately COPY'd) should not change the hash")
+	}
+}

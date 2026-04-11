@@ -7,6 +7,8 @@ The hash changes whenever:
 - The Dockerfile itself is modified.
 - A build argument value (declared with `ARG`) changes.
 - Any file that is `COPY`'d or `ADD`'d from the build context is modified.
+- A top-level source symlink (e.g. `COPY mylink /dest/`) is relinked or its resolved target content changes.
+- A symlink inside a walked directory (e.g. `COPY src/ /dest/` where `src/link` is a symlink) is relinked to a different target string.
 
 This makes `docker-hash` useful for cache-busting, change detection and deterministic CI pipelines.
 
@@ -171,6 +173,9 @@ go build \
 1. The Dockerfile is parsed to extract `COPY`/`ADD` source paths and `ARG` declarations.
 2. For each `COPY`/`ADD` that references the **build context** (i.e. without `--from=<stage>`), all matching files are collected and their contents are hashed.
    If a `.dockerignore` file is present in the context root, it is applied before collecting files — matching the behaviour of `docker build`.
+   Symbolic links are handled in two ways that mirror Docker's classic builder behavior:
+   - **Top-level source symlinks** (e.g. `COPY mylink /dest/` where `mylink` is itself a symlink) are followed; the hash covers the resolved target's content. A symlink that escapes the build context is an error.
+   - **Inner symlinks** found while walking a copied directory (e.g. `COPY src/ /dest/` where `src/foo` is a symlink) are hashed by their target string only, not the target's content. This matches what Docker copies into the image layer.
 3. Only build arguments that are **declared** with `ARG` in the Dockerfile **and** explicitly supplied via `--build-arg` are included in the hash.
    Undeclared `--build-arg` values and declared args with no supplied value are both ignored.
 4. All contributions are combined with labelled section separators and a per-file SHA-256 sub-hash into a final SHA-256 digest.
@@ -185,6 +190,9 @@ go build \
 - **`**` glob patterns are not supported.**
   BuildKit supports recursive `**` patterns in `COPY`; `docker-hash` uses `filepath.Glob` which does not.
   Affected patterns will silently match nothing.
+- **Inner symlinks are hashed by target string, not target content.**
+  When `COPY src/ /dest/` is used and `src/` contains a symbolic link, the hash covers the symlink's target string (e.g. `../other`). If the file the symlink points to changes but the symlink itself is not relinked, the hash does not change. This matches Docker's behavior — Docker preserves the symlink as-is in the resulting layer, so the target file's content is irrelevant.
+  Top-level source symlinks (e.g. `COPY mylink /dest/`) are followed: the hash covers the resolved target's content, so changes to the target file are detected.
 
 ---
 
