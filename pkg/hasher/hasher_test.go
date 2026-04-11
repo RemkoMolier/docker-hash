@@ -1428,6 +1428,101 @@ func TestCompute_BaseImage_NoResolverOfflineModeIsStable(t *testing.T) {
 
 // ---- COPY/ADD ARG/ENV expansion tests ----
 
+func TestCompute_CopySource_AddURLExpansion(t *testing.T) {
+	// `ADD ${ARCHIVE_URL} /tmp/` must hash by the EXPANDED URL, not the
+	// raw `${ARCHIVE_URL}` template. Two different ARG default values
+	// must produce different hashes via the section-3 URL contribution
+	// (which is the hashFile path's `url:` entry, not just section 1's
+	// raw bytes — section 1 differs too, so we exercise the full path).
+	dir1 := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM alpine:3.20\nARG ARCHIVE_URL=https://example.com/v1.tar.gz\nADD ${ARCHIVE_URL} /tmp/\n",
+	})
+	dir2 := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM alpine:3.20\nARG ARCHIVE_URL=https://example.com/v2.tar.gz\nADD ${ARCHIVE_URL} /tmp/\n",
+	})
+	h1, err := hasher.Compute(hasher.Options{DockerfilePath: filepath.Join(dir1, "Dockerfile"), ContextDir: dir1})
+	if err != nil {
+		t.Fatalf("Compute v1: %v", err)
+	}
+	h2, err := hasher.Compute(hasher.Options{DockerfilePath: filepath.Join(dir2, "Dockerfile"), ContextDir: dir2})
+	if err != nil {
+		t.Fatalf("Compute v2: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("different expanded ADD URLs should produce different hashes")
+	}
+
+	// Caller --build-arg override must also flow into the expanded URL.
+	// Same Dockerfile, two different caller args, two different hashes.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile": "FROM alpine:3.20\nARG ARCHIVE_URL=https://example.com/default.tar.gz\nADD ${ARCHIVE_URL} /tmp/\n",
+	})
+	hA, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+		BuildArgs:      map[string]string{"ARCHIVE_URL": "https://example.com/override-a.tar.gz"},
+	})
+	if err != nil {
+		t.Fatalf("Compute hA: %v", err)
+	}
+	hB, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+		BuildArgs:      map[string]string{"ARCHIVE_URL": "https://example.com/override-b.tar.gz"},
+	})
+	if err != nil {
+		t.Fatalf("Compute hB: %v", err)
+	}
+	if hA == hB {
+		t.Error("--build-arg override of an ADD URL ARG should change the hash")
+	}
+}
+
+func TestCompute_CopySource_ExpandsStageLocalArgBareForm(t *testing.T) {
+	// The bare `$VAR` form (without braces) must work the same as the
+	// braced `${VAR}` form for COPY paths, matching the Dockerfile spec.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":  "FROM alpine:3.20\nARG VERSION=1.0\nCOPY app-$VERSION.txt /\n",
+		"app-1.0.txt": "v1.0\n",
+	})
+	if _, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+}
+
+func TestCompute_CopySource_ExpandsDirectoryPattern(t *testing.T) {
+	// `COPY ${SRC_DIR}/ /app/` (the canonical example from issue #57) —
+	// the directory portion of the path expands and the directory walk
+	// picks up files inside it.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":   "FROM alpine:3.20\nARG SRC_DIR=src\nCOPY ${SRC_DIR}/ /app/\n",
+		"src/main.py":  "print('main')\n",
+		"src/util.py":  "def util(): pass\n",
+	})
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	// Modifying a file inside the expanded directory must change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "src/main.py"), []byte("print('changed')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after change: %v", err)
+	}
+	if h1 == h2 {
+		t.Error("modifying a file inside the expanded directory should change the hash")
+	}
+}
+
 func TestCompute_CopySource_ExpandsStageLocalArg(t *testing.T) {
 	// A stage-local ARG with a default should expand inside a COPY pattern.
 	// Build the file the ARG names so the resulting pattern matches.
