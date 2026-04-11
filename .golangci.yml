@@ -1,4 +1,2 @@
-version: "2"
-
 linters:
-  default: standard
+  enable-all: false
