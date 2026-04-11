@@ -105,8 +105,13 @@ For releases before `v1.0.0`, the maintainer may choose to keep "minor" bumps as
    git push origin vX.Y.Z
    ```
 
-5. The release workflow (see [.github/workflows/release.yml](.github/workflows/release.yml)) takes over from there: builds artifacts, generates the changelog, publishes the GitHub Release.
-6. Once the release is published, the maintainer closes the `release: prepare next release` tracking issue.
+5. The release workflow (see [.github/workflows/release.yml](.github/workflows/release.yml)) takes over from there: builds artifacts, generates the changelog, publishes the GitHub Release, and pushes the OCI image to GHCR.
+6. **First release with the OCI image only:** GHCR packages are private by default.
+   After the first image push completes, go to
+   [Package settings](https://github.com/users/RemkoMolier/packages/container/docker-hash/settings)
+   and change the visibility to **Public** so the image is pullable without authentication.
+   This is a one-time step — subsequent releases reuse the same package and inherit its visibility.
+7. Once the release is published, the maintainer closes the `release: prepare next release` tracking issue.
 
 ### Triggering a security release manually
 

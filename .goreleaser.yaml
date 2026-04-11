@@ -76,6 +76,68 @@ changelog:
     exclude:
       - "^(docs|chore|test|ci|style)(\\(.*\\))?:"
 
+dockers:
+  - id: docker-hash-linux-amd64
+    ids:
+      - docker-hash
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-amd64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/RemkoMolier/docker-hash"
+      - "--label=org.opencontainers.image.licenses=MIT"
+  - id: docker-hash-linux-arm64
+    ids:
+      - docker-hash
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-arm64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/RemkoMolier/docker-hash"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+docker_manifests:
+  # vX.Y.Z — exact version, always published (including pre-releases).
+  # Recommended pin for production workloads.
+  - name_template: "ghcr.io/remkomolier/docker-hash:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-amd64"
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-arm64"
+  # vX.Y — minor-version floating tag; skipped for pre-releases.
+  - name_template: "ghcr.io/remkomolier/docker-hash:v{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-amd64"
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-arm64"
+    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+  # vX — major-version floating tag; skipped for pre-releases.
+  - name_template: "ghcr.io/remkomolier/docker-hash:v{{ .Major }}"
+    image_templates:
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-amd64"
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-arm64"
+    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+  # latest — skipped for pre-releases.
+  - name_template: "ghcr.io/remkomolier/docker-hash:latest"
+    image_templates:
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-amd64"
+      - "ghcr.io/remkomolier/docker-hash:{{ .Tag }}-arm64"
+    skip_push: "{{ if .Prerelease }}true{{ else }}false{{ end }}"
+
 release:
   # Auto-detect hyphenated semver suffixes (-rc1, -beta, -alpha, etc.)
   # and mark the GitHub Release as a pre-release accordingly.
