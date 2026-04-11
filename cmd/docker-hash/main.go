@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RemkoMolier/docker-hash/pkg/baseimage"
 	"github.com/RemkoMolier/docker-hash/pkg/hasher"
 )
 
@@ -38,6 +40,10 @@ func main() {
 		contextDir     string
 		rawBuildArgs   buildArgList
 		showVersion    bool
+		noResolveFrom  bool
+		noExpandArgs   bool
+		platform       string
+		authFile       string
 	)
 
 	flag.StringVar(&dockerfilePath, "file", "Dockerfile", "Path to the Dockerfile")
@@ -47,11 +53,48 @@ func main() {
 	flag.Var(&rawBuildArgs, "build-arg", "Build argument in NAME=VALUE format (may be repeated)")
 	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
 	flag.BoolVar(&showVersion, "v", false, "Print version information and exit (short)")
+	flag.BoolVar(&noResolveFrom, "no-resolve-from", false,
+		"Do not resolve FROM image digests against the upstream registry. "+
+			"FROM references are still expanded against ARG/ENV state and the "+
+			"base-image hash entry is still canonicalized offline (so 'alpine' "+
+			"and 'alpine:latest' produce the same base-image entry), but no "+
+			"network calls are made. Combine with --no-expand-args to reproduce "+
+			"the v0.1.x hash shape exactly.")
+	flag.BoolVar(&noExpandArgs, "no-expand-args", false,
+		"Disable ARG/ENV expansion in COPY/ADD source paths, --from stage "+
+			"names and FROM image/platform references. With this flag set, "+
+			"a FROM line containing a $VAR reference causes docker-hash to "+
+			"fail rather than silently ignore the variable. Combine with "+
+			"--no-resolve-from to reproduce the v0.1.x hash shape exactly.")
+	flag.StringVar(&platform, "platform", "",
+		"Force a specific platform (e.g. linux/amd64) when resolving FROM "+
+			"image digests for multi-arch images. Empty (the default) hashes "+
+			"the multi-arch index digest, which keeps the hash stable across "+
+			"runner architectures. Per-FROM --platform= flags in the Dockerfile "+
+			"always take precedence over this value.")
+	flag.StringVar(&authFile, "auth-file", "",
+		"Path to a registry auth file in Docker config.json or Podman/Skopeo "+
+			"auth.json format. When set, this sets REGISTRY_AUTH_FILE for the "+
+			"current run; the default keychain still consults the other auth "+
+			"sources ($HOME/.docker/config.json, $DOCKER_CONFIG, "+
+			"$XDG_RUNTIME_DIR/containers/auth.json) per their normal lookup "+
+			"order. Same semantic as the Skopeo/Podman/Buildah --authfile flag.")
 	flag.Parse()
 
 	if showVersion {
 		printVersion(os.Stdout)
 		return
+	}
+
+	// --auth-file: set REGISTRY_AUTH_FILE so go-containerregistry's default
+	// keychain picks the file up. Setting the env var (rather than building
+	// a custom keychain ourselves) keeps the lookup logic in one place and
+	// matches the Skopeo/Podman/Buildah convention.
+	if authFile != "" {
+		if err := os.Setenv("REGISTRY_AUTH_FILE", authFile); err != nil {
+			fmt.Fprintf(os.Stderr, "error: set REGISTRY_AUTH_FILE: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Resolve the Dockerfile path relative to context if it is not absolute.
@@ -65,10 +108,25 @@ func main() {
 
 	buildArgs := parseBuildArgs(rawBuildArgs)
 
+	// Build the base-image resolver. nil means "opt out" of remote
+	// resolution: with NoExpandArgs=false the hasher uses offline mode
+	// (section 4 still emits expanded canonical references, no network),
+	// and with NoExpandArgs=true it uses the v0.1.x-compatible mode that
+	// skips section 4 entirely.
+	var resolver baseimage.Resolver
+	if !noResolveFrom {
+		resolver = baseimage.NewCachingResolver(&baseimage.RemoteResolver{
+			PlatformOverride: platform,
+		})
+	}
+
 	hash, err := hasher.Compute(hasher.Options{
-		DockerfilePath: dockerfilePath,
-		ContextDir:     contextDir,
-		BuildArgs:      buildArgs,
+		DockerfilePath:    dockerfilePath,
+		ContextDir:        contextDir,
+		BuildArgs:         buildArgs,
+		BaseImageResolver: resolver,
+		NoExpandArgs:      noExpandArgs,
+		Context:           context.Background(),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

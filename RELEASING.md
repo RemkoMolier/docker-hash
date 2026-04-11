@@ -83,6 +83,16 @@ When the cadence workflow finds releasable commits, it suggests a next version b
 The maintainer can override the recommendation when actually cutting the tag.
 For releases before `v1.0.0`, the maintainer may choose to keep "minor" bumps as `0.X` increments instead of `0.0.X`, since pre-1.0 versioning is intentionally less strict.
 
+### Pending overrides
+
+The cadence workflow's automatic recommendation is sometimes wrong on purpose, and the maintainer should override it when cutting the tag.
+Track those overrides here so they are not forgotten:
+
+- **`v0.2.0` (next release after v0.1.x)** — must skip straight from `v0.1.x` to `v0.2.0`, **not** `v0.1.x → v0.1.(x+1)`.
+   The reason is the hash-format change in #44 (FROM digest resolution): every existing v0.1.x hash will produce a different value under the v0.2.0 default behaviour.
+   Anyone who pinned a downstream cache key on a v0.1.x hash will see invalidations on upgrade, so the bump needs to be visible.
+   The `--no-resolve-from` escape hatch reproduces v0.1.x hashes bit-for-bit for users who need a soft migration.
+
 ## Maintainer workflow
 
 ### Weekly cadence (the normal case)

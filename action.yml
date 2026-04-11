@@ -36,6 +36,48 @@ inputs:
       `RUNNER_` (reserved by the runner).
     required: false
     default: ""
+  no-resolve-from:
+    description: |
+      Set to "true" to skip resolving FROM image digests against the upstream
+      registry. FROM references are still expanded against ARG/ENV state and
+      the base-image hash entry is still canonicalized offline (so `alpine`
+      and `alpine:latest` produce the same base-image entry), but no network
+      calls are made. Combine with `no-expand-args: "true"` to reproduce the
+      v0.1.x hash shape exactly. Default: "false" (resolution is on).
+    required: false
+    default: "false"
+  no-expand-args:
+    description: |
+      Set to "true" to disable ARG/ENV expansion in COPY/ADD source paths,
+      `--from=` stage names and FROM image/platform references. With this
+      flag set, a FROM line containing a `$VAR` reference causes docker-hash
+      to fail rather than silently ignore the variable. Combine with
+      `no-resolve-from: "true"` to reproduce the v0.1.x hash shape exactly.
+      Default: "false" (expansion is on).
+    required: false
+    default: "false"
+  platform:
+    description: |
+      Force a specific platform (e.g. "linux/amd64") when resolving FROM image
+      digests for multi-arch images. Empty (the default) hashes the multi-arch
+      index digest, which keeps the hash stable across runner architectures.
+      Per-FROM `--platform=` flags in the Dockerfile always take precedence
+      over this value.
+    required: false
+    default: ""
+  auth-file:
+    description: |
+      Path to a registry auth file in Docker `config.json` or Podman/Skopeo
+      `auth.json` format. When set, this is passed through to the underlying
+      CLI as `--auth-file`, which sets `REGISTRY_AUTH_FILE` for the current
+      run; the default keychain still consults the other auth sources
+      ($HOME/.docker/config.json, $DOCKER_CONFIG,
+      $XDG_RUNTIME_DIR/containers/auth.json) per their normal lookup order.
+      Same semantic as the Skopeo/Podman/Buildah `--authfile` flag. Most
+      workflows will not need this — `actions/checkout` plus
+      `docker/login-action` already populate the default Docker config.
+    required: false
+    default: ""
 
 outputs:
   hash:
@@ -63,6 +105,10 @@ runs:
         INPUT_FILE: ${{ inputs.file }}
         INPUT_CONTEXT: ${{ inputs.context }}
         INPUT_BUILD_ARGS: ${{ inputs.build-args }}
+        INPUT_NO_RESOLVE_FROM: ${{ inputs.no-resolve-from }}
+        INPUT_NO_EXPAND_ARGS: ${{ inputs.no-expand-args }}
+        INPUT_PLATFORM: ${{ inputs.platform }}
+        INPUT_AUTH_FILE: ${{ inputs.auth-file }}
       run: |
         set -euo pipefail
         BIN="${RUNNER_TEMP}/docker-hash"
@@ -76,6 +122,30 @@ runs:
             [[ -z "$line" || "$line" == \#* ]] && continue
             ARGS+=( --build-arg "$line" )
           done <<< "$INPUT_BUILD_ARGS"
+        fi
+        # Optional FROM-resolution flags. The action surface mirrors the CLI
+        # surface 1:1 so workflow authors don't have to learn two contracts.
+        case "${INPUT_NO_RESOLVE_FROM,,}" in
+          true|1|yes) ARGS+=( --no-resolve-from ) ;;
+          ""|false|0|no) ;;
+          *)
+            echo "::error::no-resolve-from must be one of: true, false, 1, 0, yes, no (got '$INPUT_NO_RESOLVE_FROM')" >&2
+            exit 1
+            ;;
+        esac
+        case "${INPUT_NO_EXPAND_ARGS,,}" in
+          true|1|yes) ARGS+=( --no-expand-args ) ;;
+          ""|false|0|no) ;;
+          *)
+            echo "::error::no-expand-args must be one of: true, false, 1, 0, yes, no (got '$INPUT_NO_EXPAND_ARGS')" >&2
+            exit 1
+            ;;
+        esac
+        if [[ -n "$INPUT_PLATFORM" ]]; then
+          ARGS+=( --platform "$INPUT_PLATFORM" )
+        fi
+        if [[ -n "$INPUT_AUTH_FILE" ]]; then
+          ARGS+=( --auth-file "$INPUT_AUTH_FILE" )
         fi
         HASH="$("$BIN" "${ARGS[@]}")"
         # Defensive: the CLI contract is a single 64-char lowercase hex
