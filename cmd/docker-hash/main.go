@@ -143,7 +143,12 @@ func main() {
 				fmt.Fprintf(os.Stderr, "error: load %s: %v\n", registriesConf, err)
 				os.Exit(1)
 			}
-			remote.Transport = mirrors.Transport(http.DefaultTransport)
+			tr, err := mirrors.Transport(http.DefaultTransport)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: build mirror transport: %v\n", err)
+				os.Exit(1)
+			}
+			remote.Transport = tr
 		}
 		resolver = baseimage.NewCachingResolver(remote)
 	}
