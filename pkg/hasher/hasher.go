@@ -196,7 +196,12 @@ func resolvePattern(contextDir, pattern string) ([]string, error) {
 				return nil, err
 			}
 		} else if info.Mode().IsRegular() {
-			files = append(files, rel)
+			// Compute the relative path directly from abs for clarity.
+			fileRel, relErr := filepath.Rel(absContext, abs)
+			if relErr != nil {
+				return nil, relErr
+			}
+			files = append(files, fileRel)
 		}
 		// Non-regular, non-directory entries (symlinks, FIFOs, devices) are skipped.
 	}
