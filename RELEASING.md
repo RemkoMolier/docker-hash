@@ -111,7 +111,11 @@ For releases before `v1.0.0`, the maintainer may choose to keep "minor" bumps as
    [Package settings](https://github.com/users/RemkoMolier/packages/container/docker-hash/settings)
    and change the visibility to **Public** so the image is pullable without authentication.
    This is a one-time step — subsequent releases reuse the same package and inherit its visibility.
-7. Once the release is published, the maintainer closes the `release: prepare next release` tracking issue.
+7. **Publish the composite action to the GitHub Actions Marketplace.**
+   Open the just-published GitHub Release in the browser and tick **Publish this Action to the GitHub Marketplace from this release** at the bottom of the edit form.
+   The first time this is done, GitHub also prompts for Marketplace terms acceptance and category selection.
+   Subsequent releases inherit the same category but still need the per-release tick to land each new version on the listing.
+8. Once the release is published, the maintainer closes the `release: prepare next release` tracking issue.
 
 ### Triggering a security release manually
 

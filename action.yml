@@ -1,6 +1,15 @@
 name: docker-hash
-description: Compute a deterministic SHA-256 hash for a Docker image build, based on the Dockerfile, build arguments, and files referenced by COPY/ADD instructions.
+# Marketplace caps the description at 125 characters.
+description: Compute a deterministic SHA-256 hash for a Docker image build from the Dockerfile, build args, and COPY/ADD sources.
 author: Remko Molier
+
+# Marketplace branding. Required for the GitHub Actions Marketplace
+# listing; the allowed icon and colour values are fixed by GitHub and
+# documented at
+# https://docs.github.com/en/actions/sharing-automations/creating-actions/metadata-syntax-for-github-actions#branding
+branding:
+  icon: hash
+  color: blue
 
 inputs:
   file:
