@@ -62,7 +62,12 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build binary
-        run: go build ./cmd/docker-hash/
+        run: |
+          go build \
+            -ldflags "-X main.version=$(git describe --tags --always --dirty) \
+                      -X main.commit=$(git rev-parse HEAD) \
+                      -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            ./cmd/docker-hash/
 
   mod-tidy:
     name: Module hygiene

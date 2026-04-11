@@ -44,6 +44,7 @@ Flags:
   -f, --file      <path>         Path to the Dockerfile  (default: Dockerfile)
   -c, --context   <dir>          Build context directory (default: .)
       --build-arg <NAME=VALUE>   Build argument; may be repeated
+  -v, --version                  Print version information and exit
 ```
 
 ### Examples
