@@ -98,7 +98,7 @@ func writeSection(h hash.Hash, label string) {
 func collectContextFiles(contextDir string, sources []dockerfile.CopySource) ([]string, error) {
 	pm, err := loadDockerIgnore(contextDir)
 	if err != nil {
-		return nil, fmt.Errorf("parse .dockerignore: %w", err)
+		return nil, fmt.Errorf("load .dockerignore: %w", err)
 	}
 
 	seen := make(map[string]struct{})
