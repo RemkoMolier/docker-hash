@@ -177,9 +177,9 @@ func TestCompute_NoCopyInstructions(t *testing.T) {
 
 func TestCompute_DirectoryCopy(t *testing.T) {
 	dir := buildTestContext(t, map[string]string{
-		"Dockerfile":     "FROM ubuntu:22.04\nCOPY src/ /app/\n",
-		"src/main.py":    "print('main')\n",
-		"src/helper.py":  "def helper(): pass\n",
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY src/ /app/\n",
+		"src/main.py":   "print('main')\n",
+		"src/helper.py": "def helper(): pass\n",
 	})
 
 	h1, err := hasher.Compute(hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir})
@@ -278,10 +278,10 @@ func TestCompute_PathTraversal(t *testing.T) {
 
 func TestCompute_GlobPattern(t *testing.T) {
 	dir := buildTestContext(t, map[string]string{
-		"Dockerfile":   "FROM ubuntu:22.04\nCOPY *.py /app/\n",
-		"main.py":      "print('main')\n",
-		"helper.py":    "def helper(): pass\n",
-		"ignored.txt":  "not a py file\n",
+		"Dockerfile":  "FROM ubuntu:22.04\nCOPY *.py /app/\n",
+		"main.py":     "print('main')\n",
+		"helper.py":   "def helper(): pass\n",
+		"ignored.txt": "not a py file\n",
 	})
 
 	opts := hasher.Options{
@@ -397,9 +397,9 @@ func TestCompute_BuildArgWithEqualsInValue(t *testing.T) {
 func TestCompute_DockerIgnore_ExcludesFiles(t *testing.T) {
 	// **/*.log should exclude log files even when COPY . picks them up.
 	dir := buildTestContext(t, map[string]string{
-		"Dockerfile":   "FROM ubuntu:22.04\nCOPY . /app/\n",
-		"app.py":       "print('hello')\n",
-		"build.log":    "some log output\n",
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"app.py":        "print('hello')\n",
+		"build.log":     "some log output\n",
 		".dockerignore": "**/*.log\n",
 	})
 
@@ -582,10 +582,10 @@ func TestCompute_DockerIgnore_NegationInsideIgnoredDir(t *testing.T) {
 	// "subdir" ignores the whole directory, but "!subdir/keep.txt" re-includes
 	// one file. The hash must change when keep.txt changes.
 	dir := buildTestContext(t, map[string]string{
-		"Dockerfile":       "FROM ubuntu:22.04\nCOPY . /app/\n",
-		"subdir/skip.txt":  "skip me\n",
-		"subdir/keep.txt":  "keep me\n",
-		".dockerignore":    "subdir\n!subdir/keep.txt\n",
+		"Dockerfile":      "FROM ubuntu:22.04\nCOPY . /app/\n",
+		"subdir/skip.txt": "skip me\n",
+		"subdir/keep.txt": "keep me\n",
+		".dockerignore":   "subdir\n!subdir/keep.txt\n",
 	})
 
 	opts := hasher.Options{DockerfilePath: filepath.Join(dir, "Dockerfile"), ContextDir: dir}
@@ -724,5 +724,92 @@ func TestCompute_DirectoryThatDoesNotExistErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "src/") {
 		t.Errorf("error should name the missing directory pattern, got: %v", err)
+	}
+}
+
+func TestCompute_DockerIgnoreExcludesAllFilesErrors(t *testing.T) {
+	// COPY foo.txt with .dockerignore containing "foo.txt": the file exists on
+	// disk but is completely excluded — Compute must return an error.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY foo.txt /app/\n",
+		"foo.txt":       "hello\n",
+		".dockerignore": "foo.txt\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Fatal("expected an error when .dockerignore excludes all COPY sources, got nil")
+	}
+	if !strings.Contains(err.Error(), ".dockerignore") {
+		t.Errorf("error should mention .dockerignore, got: %v", err)
+	}
+}
+
+func TestCompute_DockerIgnoreExcludesEverythingFromDirErrors(t *testing.T) {
+	// COPY src/ with .dockerignore containing "src/**": all files inside the
+	// directory are excluded — Compute must return an error.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY src/ /app/\n",
+		"src/main.go":   "package main\n",
+		"src/util.go":   "package main\n",
+		".dockerignore": "src/**\n",
+	})
+
+	_, err := hasher.Compute(hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	})
+	if err == nil {
+		t.Fatal("expected an error when .dockerignore excludes all files from a COPY directory, got nil")
+	}
+	if !strings.Contains(err.Error(), ".dockerignore") {
+		t.Errorf("error should mention .dockerignore, got: %v", err)
+	}
+}
+
+func TestCompute_DockerIgnorePartialExclusionStillWorks(t *testing.T) {
+	// Partial exclusion: .dockerignore excludes some files but not all —
+	// Compute must succeed and the excluded file must not affect the hash.
+	dir := buildTestContext(t, map[string]string{
+		"Dockerfile":    "FROM ubuntu:22.04\nCOPY src/ /app/\n",
+		"src/main.go":   "package main\n",
+		"src/debug.log": "debug output\n",
+		".dockerignore": "**/*.log\n",
+	})
+
+	opts := hasher.Options{
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		ContextDir:     dir,
+	}
+	h1, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute with partial .dockerignore: %v", err)
+	}
+
+	// Changing the ignored file must not change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "src/debug.log"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h2, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after changing ignored file: %v", err)
+	}
+	if h1 != h2 {
+		t.Error("changing a .dockerignore-excluded file should not change the hash")
+	}
+
+	// Changing the non-ignored file must change the hash.
+	if err := os.WriteFile(filepath.Join(dir, "src/main.go"), []byte("package main // changed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	h3, err := hasher.Compute(opts)
+	if err != nil {
+		t.Fatalf("Compute after changing non-ignored file: %v", err)
+	}
+	if h1 == h3 {
+		t.Error("changing a non-ignored file should change the hash")
 	}
 }

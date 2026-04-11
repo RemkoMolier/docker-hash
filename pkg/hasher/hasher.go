@@ -207,6 +207,7 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 	}
 
 	var files []string
+	var anyIgnored bool
 	for _, abs := range matches {
 		// Path traversal guard: ensure the resolved path stays within the context.
 		absM, err := filepath.Abs(abs)
@@ -249,7 +250,11 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 				}
 				if ignored {
 					if d.IsDir() && canPruneIgnoredDirs {
+						anyIgnored = true
 						return fs.SkipDir
+					}
+					if d.Type().IsRegular() {
+						anyIgnored = true
 					}
 					return nil
 				}
@@ -275,11 +280,16 @@ func resolvePattern(contextDir, pattern string, pm *patternmatcher.PatternMatche
 				return nil, matchErr
 			}
 			if ignored {
+				anyIgnored = true
 				continue
 			}
 			files = append(files, fileRel)
 		}
 		// Non-regular, non-directory entries (symlinks, FIFOs, devices) are skipped.
+	}
+
+	if len(files) == 0 && anyIgnored {
+		return nil, fmt.Errorf("COPY/ADD source %q matches files in the build context, but all of them are excluded by .dockerignore", pattern)
 	}
 
 	return files, nil
