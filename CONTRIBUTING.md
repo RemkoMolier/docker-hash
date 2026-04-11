@@ -130,8 +130,10 @@ The readable upstream version goes in a trailing comment so reviewers can still 
 - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 ```
 
-This is enforced by a `pinDigests: true` rule on the `github-actions` manager in [renovate.json](renovate.json).
-Renovate opens pinning PRs for any unpinned `uses:` line and keeps the SHAs current as new releases ship, preserving the trailing version comment.
+The policy is maintained by a `pinDigests: true` rule scoped to the `github-actions` manager's `action` dep type in [renovate.json](renovate.json).
+Renovate will open a pinning PR for any unpinned `uses:` line it finds on its next scan and keep already-pinned SHAs current as new releases ship, preserving the trailing version comment.
+Note that this is *maintenance*, not a blocking check: nothing in CI today rejects an unpinned `uses:` line at PR time, so Renovate may only normalize it after the fact.
+
 The reason for the policy is supply-chain hardening: a tag like `actions/checkout@v6` is mutable and can be repointed at a different commit by the action's maintainers (or anyone who compromises them), so pinning by SHA is the only way to guarantee the workflow runs the code that was reviewed.
 
 When adding a new action to a workflow, resolve the tag to a SHA up front rather than relying on Renovate to clean it up after merge.

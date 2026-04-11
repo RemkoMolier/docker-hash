@@ -9,6 +9,7 @@
     },
     {
       "matchManagers": ["github-actions"],
+      "matchDepTypes": ["action"],
       "pinDigests": true
     },
     {
