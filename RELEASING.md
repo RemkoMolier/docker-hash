@@ -121,10 +121,9 @@ Track those overrides here so they are not forgotten:
    [Package settings](https://github.com/users/RemkoMolier/packages/container/docker-hash/settings)
    and change the visibility to **Public** so the image is pullable without authentication.
    This is a one-time step — subsequent releases reuse the same package and inherit its visibility.
-7. **Publish the composite action to the GitHub Actions Marketplace.**
-   Open the just-published GitHub Release in the browser and tick **Publish this Action to the GitHub Marketplace from this release** at the bottom of the edit form.
-   The first time this is done, GitHub also prompts for Marketplace terms acceptance and category selection.
-   Subsequent releases inherit the same category but still need the per-release tick to land each new version on the listing.
+7. **First release only — publish the composite action to the GitHub Actions Marketplace.**
+   Open the just-published GitHub Release in the browser and tick **Publish this Action to the GitHub Marketplace from this release** at the bottom of the edit form; accept the Marketplace terms and select a category when prompted.
+   This is a one-time setup — once the action is listed, every subsequent release is automatically published to the Marketplace listing without further maintainer action.
 8. Once the release is published, the maintainer closes the `release: prepare next release` tracking issue.
 
 ### Triggering a security release manually
