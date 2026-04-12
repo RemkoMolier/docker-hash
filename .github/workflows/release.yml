@@ -57,12 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           # Floating major/minor git tags (vX, vX.Y) are the action-side
-          # equivalent of the docker_manifests floating image tags in
+          # equivalent of the dockers_v2 floating image tags in
           # .goreleaser.yaml. They let consumers pin
           # `uses: RemkoMolier/docker-hash@v0` (or @v0.1) and get patch/minor
           # updates automatically. Skip pre-releases so hyphenated tags
           # like v0.2.0-rc1 never promote to the floating refs, matching
-          # the skip_push policy for docker_manifests.
+          # the pre-release tag-skipping policy in dockers_v2.
           if [[ "$TAG" == *-* ]]; then
             echo "::notice::tag '$TAG' is a pre-release, skipping floating action tag update"
             exit 0
