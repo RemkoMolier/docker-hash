@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "automerge": false,
+  "platformAutomerge": true,
   "packageRules": [
     {
       "matchManagers": ["gomod"],
@@ -15,6 +15,10 @@
     {
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "3 days"
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
     }
   ],
   "vulnerabilityAlerts": {
