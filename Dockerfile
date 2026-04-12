@@ -2,4 +2,5 @@ FROM alpine:3.23@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f21
 
 RUN apk add --no-cache ca-certificates
 
-COPY docker-hash /usr/local/bin/docker-hash
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/docker-hash /usr/local/bin/docker-hash
