@@ -432,7 +432,7 @@ func (st *parseState) handleCopyOrAdd(node *parser.Node, pr *ParseResult) {
 
 // unquoteArgValue strips a single layer of surrounding double or single quotes
 // from an ARG default value, mirroring Docker's Dockerfile handling.
-// "hello" → hello, 'world' → world, "" → "", '' → "".
+// "hello" → hello, 'world' → world, "" → (empty), '' → (empty).
 // Values without surrounding quotes are returned unchanged.
 func unquoteArgValue(s string) string {
 	if unquoted, err := strconv.Unquote(s); err == nil {
