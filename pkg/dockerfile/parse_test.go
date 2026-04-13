@@ -285,6 +285,59 @@ RUN echo hi
 	}
 }
 
+func TestParse_ArgQuotedDefaults(t *testing.T) {
+	// ARG FOO="" must be treated as an empty-string default, not the
+	// two-character literal "". ARG FOO='bar' must yield bar, not 'bar'.
+	const src = `ARG EMPTY_DOUBLE=""
+ARG EMPTY_SINGLE=''
+ARG QUOTED_DOUBLE="hello"
+ARG QUOTED_SINGLE='world'
+ARG UNQUOTED=plain
+FROM alpine:3.20
+ARG STAGE_EMPTY=""
+ARG STAGE_QUOTED="stage"
+COPY app/ /app/
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Pre-FROM ARG defaults must have quotes stripped.
+	wantPreFrom := map[string]string{
+		"EMPTY_DOUBLE":  "",
+		"EMPTY_SINGLE":  "",
+		"QUOTED_DOUBLE": "hello",
+		"QUOTED_SINGLE": "world",
+		"UNQUOTED":      "plain",
+	}
+	for k, want := range wantPreFrom {
+		got, ok := pr.PreFromArgDefaults[k]
+		if !ok {
+			t.Errorf("PreFromArgDefaults[%q]: missing", k)
+			continue
+		}
+		if got != want {
+			t.Errorf("PreFromArgDefaults[%q] = %q, want %q", k, got, want)
+		}
+	}
+	// Stage-local ARG defaults must also have quotes stripped.
+	if len(pr.CopySources) == 0 {
+		t.Fatal("expected at least one CopySource")
+	}
+	scope := pr.CopySources[0].Scope
+	wantStage := map[string]string{
+		"STAGE_EMPTY":  "",
+		"STAGE_QUOTED": "stage",
+	}
+	for _, d := range scope {
+		if want, ok := wantStage[d.Name]; ok {
+			if d.Value != want {
+				t.Errorf("Scope ARG %q = %q, want %q", d.Name, d.Value, want)
+			}
+		}
+	}
+}
+
 func TestParse_PreFromArgNames(t *testing.T) {
 	// PreFromArgNames must contain every ARG declared before the first
 	// FROM, with or without a default. ARGs declared inside a stage must
