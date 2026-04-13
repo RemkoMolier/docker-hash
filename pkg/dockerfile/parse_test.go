@@ -285,6 +285,70 @@ RUN echo hi
 	}
 }
 
+func TestParse_ArgQuotedDefaults(t *testing.T) {
+	// ARG FOO="" must be treated as an empty-string default, not the
+	// two-character literal "". ARG FOO='bar' must yield bar, not 'bar'.
+	// Escape sequences must NOT be processed: ARG FOO="\n" yields the
+	// two-character literal \n, matching Docker and Podman behaviour.
+	const src = `ARG EMPTY_DOUBLE=""
+ARG EMPTY_SINGLE=''
+ARG QUOTED_DOUBLE="hello"
+ARG QUOTED_SINGLE='world'
+ARG UNQUOTED=plain
+ARG ESCAPE_SEQUENCE="\n"
+FROM alpine:3.20
+ARG STAGE_EMPTY=""
+ARG STAGE_QUOTED="stage"
+COPY app/ /app/
+`
+	pr, err := dockerfile.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Pre-FROM ARG defaults must have quotes stripped without escape processing.
+	wantPreFrom := map[string]string{
+		"EMPTY_DOUBLE":    "",
+		"EMPTY_SINGLE":    "",
+		"QUOTED_DOUBLE":   "hello",
+		"QUOTED_SINGLE":   "world",
+		"UNQUOTED":        "plain",
+		"ESCAPE_SEQUENCE": `\n`,
+	}
+	for k, want := range wantPreFrom {
+		got, ok := pr.PreFromArgDefaults[k]
+		if !ok {
+			t.Errorf("PreFromArgDefaults[%q]: missing", k)
+			continue
+		}
+		if got != want {
+			t.Errorf("PreFromArgDefaults[%q] = %q, want %q", k, got, want)
+		}
+	}
+	// Stage-local ARG defaults must also have quotes stripped.
+	if len(pr.CopySources) == 0 {
+		t.Fatal("expected at least one CopySource")
+	}
+	scope := pr.CopySources[0].Scope
+	wantStage := map[string]string{
+		"STAGE_EMPTY":  "",
+		"STAGE_QUOTED": "stage",
+	}
+	gotStage := make(map[string]string, len(scope))
+	for _, d := range scope {
+		gotStage[d.Name] = d.Value
+	}
+	for k, want := range wantStage {
+		got, ok := gotStage[k]
+		if !ok {
+			t.Errorf("Scope ARG %q: missing", k)
+			continue
+		}
+		if got != want {
+			t.Errorf("Scope ARG %q = %q, want %q", k, got, want)
+		}
+	}
+}
+
 func TestParse_PreFromArgNames(t *testing.T) {
 	// PreFromArgNames must contain every ARG declared before the first
 	// FROM, with or without a default. ARGs declared inside a stage must

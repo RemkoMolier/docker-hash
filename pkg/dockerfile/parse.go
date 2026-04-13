@@ -429,6 +429,19 @@ func (st *parseState) handleCopyOrAdd(node *parser.Node, pr *ParseResult) {
 	pr.CopySources = append(pr.CopySources, cs)
 }
 
+// unquoteArgValue strips a single layer of surrounding double or single quotes
+// from an ARG default value, mirroring Docker's and Podman's Dockerfile handling.
+// e.g. ARG X="val" -> val, ARG X='val' -> val, ARG X="" -> empty string.
+// No escape-sequence processing is performed (matching builder behaviour for
+// both quoting styles), so ARG X="\n" yields the two-character literal \n.
+// Values without surrounding quotes are returned unchanged.
+func unquoteArgValue(s string) string {
+	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"' || s[0] == '\'' && s[len(s)-1] == '\'') {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 // handleArg processes an `ARG name` or `ARG name=default` instruction.
 // Pre-FROM ARGs are recorded in pr.PreFromArgNames /
 // pr.PreFromArgDefaults so the hasher can gate FROM-expansion lookups by
@@ -445,6 +458,8 @@ func (st *parseState) handleArg(node *parser.Node, pr *ParseResult) {
 	if idx := strings.Index(argExpr, "="); idx >= 0 {
 		name = argExpr[:idx]
 		value = argExpr[idx+1:]
+		// Strip surrounding quotes (e.g. ARG FOO="" or ARG FOO='bar').
+		value = unquoteArgValue(value)
 		hasDefault = true
 	}
 	// Deduplicate: the same ARG name can appear in multiple stages.
