@@ -333,11 +333,18 @@ COPY app/ /app/
 		"STAGE_EMPTY":  "",
 		"STAGE_QUOTED": "stage",
 	}
+	gotStage := make(map[string]string, len(scope))
 	for _, d := range scope {
-		if want, ok := wantStage[d.Name]; ok {
-			if d.Value != want {
-				t.Errorf("Scope ARG %q = %q, want %q", d.Name, d.Value, want)
-			}
+		gotStage[d.Name] = d.Value
+	}
+	for k, want := range wantStage {
+		got, ok := gotStage[k]
+		if !ok {
+			t.Errorf("Scope ARG %q: missing", k)
+			continue
+		}
+		if got != want {
+			t.Errorf("Scope ARG %q = %q, want %q", k, got, want)
 		}
 	}
 }
