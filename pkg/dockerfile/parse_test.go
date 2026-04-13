@@ -288,11 +288,14 @@ RUN echo hi
 func TestParse_ArgQuotedDefaults(t *testing.T) {
 	// ARG FOO="" must be treated as an empty-string default, not the
 	// two-character literal "". ARG FOO='bar' must yield bar, not 'bar'.
+	// Escape sequences must NOT be processed: ARG FOO="\n" yields the
+	// two-character literal \n, matching Docker and Podman behaviour.
 	const src = `ARG EMPTY_DOUBLE=""
 ARG EMPTY_SINGLE=''
 ARG QUOTED_DOUBLE="hello"
 ARG QUOTED_SINGLE='world'
 ARG UNQUOTED=plain
+ARG ESCAPE_SEQUENCE="\n"
 FROM alpine:3.20
 ARG STAGE_EMPTY=""
 ARG STAGE_QUOTED="stage"
@@ -302,13 +305,14 @@ COPY app/ /app/
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	// Pre-FROM ARG defaults must have quotes stripped.
+	// Pre-FROM ARG defaults must have quotes stripped without escape processing.
 	wantPreFrom := map[string]string{
-		"EMPTY_DOUBLE":  "",
-		"EMPTY_SINGLE":  "",
-		"QUOTED_DOUBLE": "hello",
-		"QUOTED_SINGLE": "world",
-		"UNQUOTED":      "plain",
+		"EMPTY_DOUBLE":    "",
+		"EMPTY_SINGLE":    "",
+		"QUOTED_DOUBLE":   "hello",
+		"QUOTED_SINGLE":   "world",
+		"UNQUOTED":        "plain",
+		"ESCAPE_SEQUENCE": `\n`,
 	}
 	for k, want := range wantPreFrom {
 		got, ok := pr.PreFromArgDefaults[k]

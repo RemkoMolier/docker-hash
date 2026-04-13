@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/moby/buildkit/frontend/dockerfile/command"
@@ -431,16 +430,13 @@ func (st *parseState) handleCopyOrAdd(node *parser.Node, pr *ParseResult) {
 }
 
 // unquoteArgValue strips a single layer of surrounding double or single quotes
-// from an ARG default value, mirroring Docker's Dockerfile handling.
+// from an ARG default value, mirroring Docker's and Podman's Dockerfile handling.
 // e.g. ARG X="val" -> val, ARG X='val' -> val, ARG X="" -> empty string.
+// No escape-sequence processing is performed (matching builder behaviour for
+// both quoting styles), so ARG X="\n" yields the two-character literal \n.
 // Values without surrounding quotes are returned unchanged.
 func unquoteArgValue(s string) string {
-	if unquoted, err := strconv.Unquote(s); err == nil {
-		return unquoted
-	}
-	// strconv.Unquote only handles double-quoted Go strings; handle
-	// single-quoted values (no escape-sequence support, matching Docker).
-	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"' || s[0] == '\'' && s[len(s)-1] == '\'') {
 		return s[1 : len(s)-1]
 	}
 	return s
