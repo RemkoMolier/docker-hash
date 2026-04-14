@@ -58,6 +58,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_TAP_TOKEN: ${{ secrets.GORELEASER_TAP_TOKEN }}
 
+      # Attestation runs before the floating-tag update so a push failure
+      # on the mutable refs can't skip provenance for artifacts that have
+      # already been published to the GitHub Release and GHCR.
+      - name: Attest build provenance for release artifacts
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          # Attests each artifact listed inside checksums.txt (the
+          # archives, nfpms, and SBOMs).
+          subject-checksums: dist/checksums.txt
+
+      - name: Attest build provenance for checksums.txt
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          # Separate step so checksums.txt itself also carries provenance
+          # — subject-checksums only attests the files listed inside the
+          # checksum file, not the checksum file itself.
+          subject-path: dist/checksums.txt
+
       - name: Update floating action tags
         env:
           TAG: ${{ github.ref_name }}
@@ -93,7 +111,3 @@ jobs:
           git tag -f "$MAJOR" "$COMMIT"
           git tag -f "$MINOR" "$COMMIT"
           git push --force origin "refs/tags/$MAJOR" "refs/tags/$MINOR"
-
-      - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
-        with:
-          subject-checksums: dist/checksums.txt
