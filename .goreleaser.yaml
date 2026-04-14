@@ -107,7 +107,7 @@ scoops:
   - repository:
       owner: RemkoMolier
       name: scoop-docker-hash
-      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+      token: "{{ .Env.GORELEASER_TAP_TOKEN }}"
     homepage: https://github.com/RemkoMolier/docker-hash
     description: "Compute a deterministic SHA-256 hash for Docker image builds"
     license: MIT
