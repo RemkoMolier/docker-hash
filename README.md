@@ -66,7 +66,7 @@ The binary is installed to `/usr/bin/docker-hash`.
 ```sh
 # Replace vX.Y.Z and x86_64 with the version and architecture you need.
 curl -sSLO https://github.com/RemkoMolier/docker-hash/releases/download/vX.Y.Z/docker-hash_vX.Y.Z_linux_x86_64.rpm
-sudo rpm -i docker-hash_vX.Y.Z_linux_x86_64.rpm
+sudo rpm -Uvh docker-hash_vX.Y.Z_linux_x86_64.rpm
 ```
 
 The binary is installed to `/usr/bin/docker-hash`.
