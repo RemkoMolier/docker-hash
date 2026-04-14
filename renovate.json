@@ -13,12 +13,25 @@
       "pinDigests": true
     },
     {
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true
+    },
+    {
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "3 days"
     },
     {
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^go\\.mod$/"],
+      "matchStrings": ["(?m)^go\\s+(?<currentValue>\\S+)$"],
+      "datasourceTemplate": "golang-version",
+      "depNameTemplate": "go"
     }
   ],
   "vulnerabilityAlerts": {
