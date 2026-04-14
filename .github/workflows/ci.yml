@@ -11,6 +11,8 @@ concurrency:
 
 permissions:
   contents: read
+  security-events: write
+  id-token: write
 
 jobs:
   test:
@@ -24,6 +26,17 @@ jobs:
           go-version-file: go.mod
       - name: Run tests
         run: go test ./... -race -count=1
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/dependency-review-action@081d1d3c861a0a787b59b5061647764c374707f5 # v6.1.1
+        with:
+          dependees-pattern: '^(?!.*-dev).*$'
 
   vet:
     name: Vet
@@ -117,6 +130,43 @@ jobs:
         run: |
           NODE_PATH="$MDLINT_PREFIX/node_modules" \
             npx --prefix "$MDLINT_PREFIX" markdownlint-cli2 "**/*.md"
+
+  scorecard:
+    name: OSSF Scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: ossf/scorecard-action@1567920586421a1607a616868035e24c7f8f0b73 # v2.3.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          publish_results: true
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: github/codeql-action/init@d1b3785394c184a612e844e767c2e04191849e76 # v3.2.0
+        with:
+          languages: go
+      - uses: github/codeql-action/analyze@743617d8684986209811183c102753431a967934 # v3.2.0
+
+  trivy:
+    name: Image Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Build image
+        run: docker build -t docker-hash-ci .
+      - uses: aquasecurity/trivy-action@078368a6b65238b6462d33c5628c67f37803696d # v0.24.0
+        with:
+          image-ref: 'docker-hash-ci'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
 
   action-self-test:
     name: Action self-test

@@ -43,6 +43,18 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+sboms:
+  - format: spdx
+  - format: cyclonedx
+
+signs:
+  - artifacts: archives
+    cmd: cosign
+    args: ["sign-blob", "--yes"]
+  - artifacts: checksums
+    cmd: cosign
+    args: ["sign-blob", "--yes"]
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
@@ -143,6 +155,16 @@ brews:
       system "#{bin}/docker-hash", "--version"
     install: |
       bin.install "docker-hash"
+
+docker_signs:
+  - name_template: "ghcr.io/remkomolier/docker-hash:{{ .Tag }}"
+    cmd: cosign
+    args: ["sign", "--yes"]
+
+docker_attestations:
+  - name_template: "ghcr.io/remkomolier/docker-hash:{{ .Tag }}"
+    type: sbom
+
 
 release:
   # Auto-detect hyphenated semver suffixes (-rc1, -beta, -alpha, etc.)
