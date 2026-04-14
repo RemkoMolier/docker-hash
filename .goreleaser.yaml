@@ -43,17 +43,47 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# Syft-generated SBOMs, one per release archive, in both SPDX and CycloneDX
+# JSON. Exposed as release assets alongside the archives they describe.
 sboms:
-  - format: spdx
-  - format: cyclonedx
+  - id: spdx
+    cmd: syft
+    args: ["$artifact", "--output", "spdx-json=$document"]
+    documents: ["${artifact}.spdx.sbom.json"]
+    artifacts: archive
+  - id: cyclonedx
+    cmd: syft
+    args: ["$artifact", "--output", "cyclonedx-json=$document"]
+    documents: ["${artifact}.cyclonedx.sbom.json"]
+    artifacts: archive
 
+# Keyless Sigstore signing for release archives and the checksums file.
+# When args is overridden, the ${artifact}/${signature}/${certificate}
+# placeholders are required; without them cosign wouldn't know what to
+# sign or where to write the outputs.
 signs:
-  - artifacts: archives
+  - id: sign-archives
     cmd: cosign
-    args: ["sign-blob", "--yes"]
-  - artifacts: checksums
+    artifacts: archive
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - "sign-blob"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "--yes"
+      - "${artifact}"
+  - id: sign-checksum
     cmd: cosign
-    args: ["sign-blob", "--yes"]
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - "sign-blob"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "--yes"
+      - "${artifact}"
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
@@ -131,6 +161,20 @@ dockers_v2:
       "org.opencontainers.image.source": "https://github.com/RemkoMolier/docker-hash"
       "org.opencontainers.image.licenses": "MIT"
 
+# Keyless Sigstore signing for every pushed image and manifest produced
+# by dockers_v2. Splitting across two entries (images vs manifests) keeps
+# the per-arch images signed in addition to the multi-arch manifest, so
+# consumers who pull by digest still get a verifiable signature.
+docker_signs:
+  - id: sign-images
+    cmd: cosign
+    artifacts: images
+    args: ["sign", "--yes", "${artifact}@${digest}"]
+  - id: sign-manifests
+    cmd: cosign
+    artifacts: manifests
+    args: ["sign", "--yes", "${artifact}@${digest}"]
+
 scoops:
   - repository:
       owner: RemkoMolier
@@ -155,16 +199,6 @@ brews:
       system "#{bin}/docker-hash", "--version"
     install: |
       bin.install "docker-hash"
-
-docker_signs:
-  - name_template: "ghcr.io/remkomolier/docker-hash:{{ .Tag }}"
-    cmd: cosign
-    args: ["sign", "--yes"]
-
-docker_attestations:
-  - name_template: "ghcr.io/remkomolier/docker-hash:{{ .Tag }}"
-    type: sbom
-
 
 release:
   # Auto-detect hyphenated semver suffixes (-rc1, -beta, -alpha, etc.)

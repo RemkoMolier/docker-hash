@@ -11,8 +11,6 @@ concurrency:
 
 permissions:
   contents: read
-  security-events: write
-  id-token: write
 
 jobs:
   test:
@@ -34,9 +32,9 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/dependency-review-action@081d1d3c861a0a787b59b5061647764c374707f5 # v6.1.1
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
-          dependees-pattern: '^(?!.*-dev).*$'
+          fail-on-severity: high
 
   vet:
     name: Vet
@@ -135,22 +133,44 @@ jobs:
     name: OSSF Scorecard
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Scorecard is a repo-level health check and its publish_results path
+    # only works on pushes to the default branch. Skip on PRs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+      actions: read
     steps:
-      - uses: ossf/scorecard-action@1567920586421a1607a616868035e24c7f8f0b73 # v2.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+      - uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
           publish_results: true
+      - uses: github/codeql-action/upload-sarif@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
+        with:
+          sarif_file: results.sarif
 
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: github/codeql-action/init@d1b3785394c184a612e844e767c2e04191849e76 # v3.2.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - uses: github/codeql-action/init@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
         with:
           languages: go
-      - uses: github/codeql-action/analyze@743617d8684986209811183c102753431a967934 # v3.2.0
+      - uses: github/codeql-action/autobuild@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
+      - uses: github/codeql-action/analyze@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
 
   trivy:
     name: Image Scan
@@ -160,7 +180,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Build image
         run: docker build -t docker-hash-ci .
-      - uses: aquasecurity/trivy-action@078368a6b65238b6462d33c5628c67f37803696d # v0.24.0
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: 'docker-hash-ci'
           format: 'table'

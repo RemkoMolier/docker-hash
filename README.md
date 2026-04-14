@@ -149,7 +149,7 @@ Pre-release tags (e.g. `v0.2.0-rc1`) are published as `vX.Y.Z` only; the floatin
 **Recommendation:** pin to `vX.Y.Z` in CI pipelines to get fully reproducible builds.
 
 ### Supported platforms
-L
+
 - `linux/amd64`
 - `linux/arm64`
 
@@ -157,12 +157,16 @@ L
 
 ## Verifying Release Artifacts
 
-To ensure the integrity and authenticity of `docker-hash`, all official releases are cryptographically signed and accompanied by SLSA provenance.
+Official releases are cryptographically signed with Sigstore keyless signing.
+Release archives and the `checksums.txt` file additionally carry a GitHub
+build provenance attestation (SLSA v1.0).
 
 ### Verifying Binaries
-If you download a pre-built binary from the [Releases page](https://github.com/RemkoMolier/docker-hash/releases), you can verify it using `cosign` and the GitHub CLI:
 
-1. **Verify the signature**:
+Archives downloaded from the [Releases page](https://github.com/RemkoMolier/docker-hash/releases) can be verified with `cosign` and the GitHub CLI.
+
+1. **Verify the Sigstore signature**:
+
    ```sh
    cosign verify-blob \
      --certificate docker-hash_vX.Y.Z_linux_amd64.tar.gz.pem \
@@ -172,40 +176,35 @@ If you download a pre-built binary from the [Releases page](https://github.com/R
      docker-hash_vX.Y.Z_linux_amd64.tar.gz
    ```
 
-2. **Verify SLSA provenance**:
+2. **Verify the build provenance attestation**:
+
    ```sh
-   gh attestation verify dist/docker-hash_vX.Y.Z_linux_amd64.tar.gz --owner RemkoMolier
+   gh attestation verify docker-hash_vX.Y.Z_linux_amd64.tar.gz --owner RemkoMolier
+   ```
+
+3. **Inspect the accompanying SBOM**:
+
+   ```sh
+   # Each archive ships alongside SPDX and CycloneDX SBOMs as release assets:
+   #   docker-hash_vX.Y.Z_linux_amd64.tar.gz.spdx.sbom.json
+   #   docker-hash_vX.Y.Z_linux_amd64.tar.gz.cyclonedx.sbom.json
    ```
 
 ### Verifying OCI Images
-For images pulled from `ghcr.io/remkomolier/docker-hash`:
 
-1. **Verify the image signature**:
-   ```sh
-   cosign verify \
-     --certificate-identity-regexp "https://github.com/RemkoMolier/docker-hash/.github/workflows/release.yml@refs/tags/v.*" \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     ghcr.io/remkomolier/docker-hash:vX.Y.Z
-   ```
+Images pulled from `ghcr.io/remkomolier/docker-hash` carry a Sigstore keyless signature.
+Verify with:
 
-2. **Verify SLSA provenance**:
-   ```sh
-   cosign verify-attestation \
-     --type slsaprovenance \
-     --certificate-identity-regexp "https://github.com/RemkoMolier/docker-hash/.github/workflows/release.yml@refs/tags/v.*" \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     ghcr.io/remkomolier/docker-hash:vX.Y.Z
-   ```
-
-3. **Inspect the SBOM**:
-   ```sh
-   cosign download sbom ghcr.io/remkomolier/docker-hash:vX.Y.Z
-   ```
+```sh
+cosign verify \
+  --certificate-identity-regexp "https://github.com/RemkoMolier/docker-hash/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/remkomolier/docker-hash:vX.Y.Z
+```
 
 ---
 
 ## Use as a GitHub Action
-
 
 `docker-hash` is also published as a reusable composite GitHub Action so you can compute the hash directly inside a workflow without installing the CLI by hand.
 
