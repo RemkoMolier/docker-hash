@@ -24,6 +24,14 @@ This makes `docker-hash` useful for cache-busting, change detection and determin
 
 ## Installation
 
+### Homebrew (macOS and Linux)
+
+```sh
+brew install remkomolier/tap/docker-hash
+```
+
+Upgrades are handled automatically by `brew upgrade`.
+
 ### From releases (Linux / macOS)
 
 Pre-built binaries for Linux and macOS (amd64 and arm64) are available on the [GitHub Releases page](https://github.com/RemkoMolier/docker-hash/releases).
