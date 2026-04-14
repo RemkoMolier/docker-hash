@@ -176,8 +176,8 @@ Archives downloaded from the [Releases page](https://github.com/RemkoMolier/dock
 
    ```sh
    cosign verify-blob \
-     --certificate docker-hash_vX.Y.Z_linux_amd64.tar.gz.pem \
-     --signature   docker-hash_vX.Y.Z_linux_amd64.tar.gz.sig \
+     --new-bundle-format \
+     --bundle docker-hash_vX.Y.Z_linux_amd64.tar.gz.sigstore.json \
      --certificate-identity-regexp "https://github.com/RemkoMolier/docker-hash/.github/workflows/release.yml@refs/tags/v.*" \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
      docker-hash_vX.Y.Z_linux_amd64.tar.gz
