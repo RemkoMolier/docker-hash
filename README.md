@@ -38,6 +38,15 @@ sudo mv docker-hash /usr/local/bin/
 > **macOS note:** On first run macOS may block the binary because it is not code-signed.
 > Right-click → Open, or run `xattr -d com.apple.quarantine ./docker-hash` to bypass the quarantine.
 
+### Via Scoop (Windows)
+
+On Windows, install via [Scoop](https://scoop.sh/):
+
+```powershell
+scoop bucket add docker-hash https://github.com/RemkoMolier/scoop-docker-hash.git
+scoop install docker-hash
+```
+
 ### Using `go install`
 
 ```sh
