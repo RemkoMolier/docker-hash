@@ -29,7 +29,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": ["/^go\\.mod$/"],
-      "matchStrings": ["^go (?<currentValue>\\S+)"],
+      "matchStrings": ["(?m)^go\\s+(?<currentValue>\\S+)$"],
       "datasourceTemplate": "golang-version",
       "depNameTemplate": "go"
     }
