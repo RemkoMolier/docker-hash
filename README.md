@@ -316,12 +316,14 @@ For a workflow that needs a specific platform's manifest:
 | `platform` | `""` | Force a specific platform (e.g. `linux/amd64`) when resolving multi-arch base images. Empty hashes the multi-arch index digest. Per-FROM `--platform=` flags in the Dockerfile take precedence. |
 | `auth-file` | `""` | Path to a registry auth file (Docker `config.json` or Podman/Skopeo `auth.json` format). Same semantic as the Skopeo/Podman/Buildah `--authfile` flag. Most workflows will not need this — `actions/checkout` plus `docker/login-action` already populate the default Docker config. |
 | `registries-conf` | `""` | Path to a Podman-style `registries.conf` TOML file describing per-registry mirrors. When set (and `no-resolve-from` is not `"true"`), FROM digest resolution is routed through the configured mirrors with fallback to the upstream on connection error or HTTP 5xx. The file uses the same `[[registry]]` / `[[registry.mirror]]` schema Podman, Buildah, Skopeo and CRI-O already consume; an existing `/etc/containers/registries.conf` works as-is. There is no auto-discovery — the path must be provided. |
+| `check` | `""` | Optional image-reference template to probe against the registry. Must contain a literal `{hash}` placeholder (e.g. `my-reg/app:build-{hash}`). When set, the step populates the `exists` output with `yes` on a manifest hit or `no` on a 404. Registry/auth/network errors fail the step (retryable in CI). Authentication re-uses the same keychain as FROM resolution, so a prior `docker/login-action` step applies transparently. |
 
 ### Outputs
 
 | Output | Description |
 |---|---|
 | `hash` | The 64-character hex SHA-256 digest. |
+| `exists` | `yes` or `no` when `check` is set (a 404 surfaces as `no` and does **not** fail the step, so downstream jobs can branch on it). Empty when `check` was not provided. |
 
 ### Notes
 
@@ -347,6 +349,9 @@ Flags:
       --platform    <os/arch>      Force a specific platform when resolving FROM digests
       --auth-file   <path>         Registry auth file path (Docker / Podman / Skopeo format)
       --registries-conf <path>     Podman-style registries.conf for per-registry mirror routing
+      --hash                       Print the bare hash to stdout (implicit default; pass alongside --check to also print the hash)
+      --check       <template>     Check whether a tag exists in the registry; template contains a literal {hash} placeholder
+      --dotenv      <PREFIX>       Emit PREFIX_HASH=<hash> (and PREFIX_EXISTS=yes|no with --check) instead of the bare hash
   -v, --version                    Print version information and exit
 ```
 
@@ -380,9 +385,21 @@ docker-hash --auth-file ~/.config/containers/auth.json
 # are an HTTP-layer concern, the canonical upstream image name is what
 # feeds the hash.
 docker-hash --registries-conf /etc/containers/registries.conf
+
+# Check whether an image already exists in the registry for the current
+# hash. {hash} is substituted with the computed digest. Exit 0 = hit,
+# 3 = miss (build it), 2 = registry/auth/network error (retry the job).
+docker-hash --check 'my-reg/app:build-{hash}'
+
+# Emit dotenv output for CI consumers (e.g. GitLab's dotenv report). With
+# --check, also includes PREFIX_EXISTS=yes|no. --dotenv and --hash are
+# mutually exclusive — the dotenv block already carries the hash.
+docker-hash --check 'my-reg/app:build-{hash}' --dotenv CI_BUILD
 ```
 
-The tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
+By default the tool prints a single 64-character hex-encoded SHA-256 digest to stdout.
+With `--dotenv PREFIX` the output is instead a dotenv block (`PREFIX_HASH=<hash>`, plus `PREFIX_EXISTS=yes|no` when combined with `--check`).
+With `--check <template>` the exit code carries the result: `0` = image exists, `3` = not found, `2` = registry communication error.
 
 ---
 

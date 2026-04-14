@@ -91,11 +91,32 @@ inputs:
       There is no auto-discovery: the path must be provided explicitly.
     required: false
     default: ""
+  check:
+    description: |
+      Optional image-reference template to probe against the registry.
+      When set, the action checks whether a tag matching the template
+      already exists in the registry and exposes the result as the
+      `exists` step output. The template must contain a literal `{hash}`
+      placeholder which is substituted with the computed digest, e.g.
+      `my-reg/app:build-{hash}` or `ghcr.io/org/app:build-{hash}-amd64`.
+      A manifest 404 surfaces as `exists=no` (the step still succeeds so
+      downstream jobs can branch on it); a registry/auth/network error
+      fails the step. Authentication re-uses the same keychain as FROM
+      resolution, so a prior `docker/login-action` works transparently.
+    required: false
+    default: ""
 
 outputs:
   hash:
     description: The 64-character hex SHA-256 digest computed by docker-hash.
     value: ${{ steps.compute.outputs.hash }}
+  exists:
+    description: |
+      "yes" if the image referenced by the rendered `check` template
+      exists in the registry, "no" if the registry returned 404, or
+      empty when `check` was not provided. Registry/auth/network errors
+      fail the step rather than surfacing here.
+    value: ${{ steps.compute.outputs.exists }}
 
 runs:
   using: composite
@@ -123,6 +144,7 @@ runs:
         INPUT_PLATFORM: ${{ inputs.platform }}
         INPUT_AUTH_FILE: ${{ inputs.auth-file }}
         INPUT_REGISTRIES_CONF: ${{ inputs.registries-conf }}
+        INPUT_CHECK: ${{ inputs.check }}
       run: |
         set -euo pipefail
         BIN="${RUNNER_TEMP}/docker-hash"
@@ -164,7 +186,36 @@ runs:
         if [[ -n "$INPUT_REGISTRIES_CONF" ]]; then
           ARGS+=( --registries-conf "$INPUT_REGISTRIES_CONF" )
         fi
+        # When the caller supplies a check template, request the bare
+        # hash alongside the registry probe (--hash --check) so stdout
+        # still carries the digest on both hit and miss. The exit code
+        # tells us which happened: 0 = exists, 3 = not found, 2 =
+        # registry/auth/network (fail the step — CI should retry).
+        EXISTS=""
+        if [[ -n "$INPUT_CHECK" ]]; then
+          ARGS+=( --hash --check "$INPUT_CHECK" )
+        fi
+        set +e
         HASH="$("$BIN" "${ARGS[@]}")"
+        DH_EXIT=$?
+        set -e
+        if [[ -n "$INPUT_CHECK" ]]; then
+          case "$DH_EXIT" in
+            0) EXISTS="yes" ;;
+            3) EXISTS="no" ;;
+            2)
+              echo "::error::docker-hash --check: registry communication error (exit 2). This is retryable." >&2
+              exit 1
+              ;;
+            *)
+              echo "::error::docker-hash failed with exit $DH_EXIT" >&2
+              exit 1
+              ;;
+          esac
+        elif [[ "$DH_EXIT" -ne 0 ]]; then
+          echo "::error::docker-hash failed with exit $DH_EXIT" >&2
+          exit 1
+        fi
         # Defensive: the CLI contract is a single 64-char lowercase hex
         # SHA-256 digest. Reject anything else before writing to
         # $GITHUB_OUTPUT (and downstream $GITHUB_ENV) so unexpected stdout
@@ -177,6 +228,10 @@ runs:
         fi
         echo "hash=$HASH" >> "$GITHUB_OUTPUT"
         echo "docker-hash: $HASH"
+        if [[ -n "$EXISTS" ]]; then
+          echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
+          echo "docker-hash: image exists=$EXISTS"
+        fi
 
     - name: Export env var
       if: inputs.export-env-name != ''
