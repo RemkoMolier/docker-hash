@@ -155,6 +155,55 @@ Pre-release tags (e.g. `v0.2.0-rc1`) are published as `vX.Y.Z` only; the floatin
 
 ---
 
+## Verifying Release Artifacts
+
+Official releases are cryptographically signed with Sigstore keyless signing.
+Release archives and the `checksums.txt` file additionally carry a GitHub
+build provenance attestation (SLSA v1.0).
+
+### Verifying Binaries
+
+Archives downloaded from the [Releases page](https://github.com/RemkoMolier/docker-hash/releases) can be verified with `cosign` and the GitHub CLI.
+
+1. **Verify the Sigstore signature**:
+
+   ```sh
+   cosign verify-blob \
+     --certificate docker-hash_vX.Y.Z_linux_amd64.tar.gz.pem \
+     --signature   docker-hash_vX.Y.Z_linux_amd64.tar.gz.sig \
+     --certificate-identity-regexp "https://github.com/RemkoMolier/docker-hash/.github/workflows/release.yml@refs/tags/v.*" \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     docker-hash_vX.Y.Z_linux_amd64.tar.gz
+   ```
+
+2. **Verify the build provenance attestation**:
+
+   ```sh
+   gh attestation verify docker-hash_vX.Y.Z_linux_amd64.tar.gz --owner RemkoMolier
+   ```
+
+3. **Inspect the accompanying SBOM**:
+
+   ```sh
+   # Each archive ships alongside SPDX and CycloneDX SBOMs as release assets:
+   #   docker-hash_vX.Y.Z_linux_amd64.tar.gz.spdx.sbom.json
+   #   docker-hash_vX.Y.Z_linux_amd64.tar.gz.cyclonedx.sbom.json
+   ```
+
+### Verifying OCI Images
+
+Images pulled from `ghcr.io/remkomolier/docker-hash` carry a Sigstore keyless signature.
+Verify with:
+
+```sh
+cosign verify \
+  --certificate-identity-regexp "https://github.com/RemkoMolier/docker-hash/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/remkomolier/docker-hash:vX.Y.Z
+```
+
+---
+
 ## Use as a GitHub Action
 
 `docker-hash` is also published as a reusable composite GitHub Action so you can compute the hash directly inside a workflow without installing the CLI by hand.

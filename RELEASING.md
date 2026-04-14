@@ -166,8 +166,26 @@ If you want to change the day or time of the weekly slot, edit the `cron:` line 
 If you want to change the "releasable" type list, edit the `RELEASABLE_TYPES_RE` variable in the same file and update the list above to match.
 If you want to change the security signal from a label to a different mechanism (e.g. PR title prefix), edit the workflow's "security flag detection" step.
 
+## Supply-chain requirements at release time
+
+The tag-triggered release workflow in [.github/workflows/release.yml](.github/workflows/release.yml) produces signed, attested, SBOM-accompanied artifacts.
+That means the release runner depends on a few things being installed and reachable — most are handled automatically, but worth knowing when debugging a failed release:
+
+- **cosign** — installed by `sigstore/cosign-installer` in the workflow.
+  Used by GoReleaser's `signs:` / `docker_signs:` hooks to produce `*.sig` / `*.pem` files for archives + `checksums.txt` and to sign OCI images + manifests.
+- **syft** — installed by `anchore/sbom-action/download-syft` in the workflow.
+  Used by GoReleaser's `sboms:` block to emit `*.spdx.sbom.json` + `*.cyclonedx.sbom.json` next to every archive.
+- **Sigstore public-good services** — `fulcio.sigstore.dev` (certificate authority) and `rekor.sigstore.dev` (transparency log) must be reachable from the runner.
+  A keyless signing run contacts both; if either is down the release will fail rather than produce unsigned artifacts.
+- **GitHub attestations** — `actions/attest-build-provenance` runs twice: once with `subject-checksums: dist/checksums.txt` to attest every artifact listed in the checksum file, and once with `subject-path: dist/checksums.txt` so the checksum file itself also carries provenance.
+  Both steps run before the floating-tag update so a tag-push failure doesn't skip provenance.
+
+If any of these fail, the release will halt with artifacts already on the GitHub Release but without signatures or attestations.
+In that case, delete the GitHub Release + pushed tags and re-run after fixing the underlying issue rather than leaving a partial release published.
+
 ## References
 
 - Issue [#38](https://github.com/RemkoMolier/docker-hash/issues/38) — original release-train proposal.
 - [.github/workflows/release.yml](.github/workflows/release.yml) — the existing tag-triggered release pipeline.
 - [.github/workflows/release-cadence.yml](.github/workflows/release-cadence.yml) — the weekly cadence workflow.
+- [SECURITY.md](SECURITY.md) — supply-chain posture and vulnerability-reporting policy.
