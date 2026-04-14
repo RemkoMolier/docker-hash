@@ -103,6 +103,16 @@ dockers_v2:
       "org.opencontainers.image.source": "https://github.com/RemkoMolier/docker-hash"
       "org.opencontainers.image.licenses": "MIT"
 
+scoops:
+  - repository:
+      owner: RemkoMolier
+      name: scoop-docker-hash
+      token: "{{ .Env.GORELEASER_TAP_TOKEN }}"
+    homepage: https://github.com/RemkoMolier/docker-hash
+    description: "Compute a deterministic SHA-256 hash for Docker image builds"
+    license: MIT
+    skip_upload: auto
+
 release:
   # Auto-detect hyphenated semver suffixes (-rc1, -beta, -alpha, etc.)
   # and mark the GitHub Release as a pre-release accordingly.
