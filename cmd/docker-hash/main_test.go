@@ -127,8 +127,7 @@ func TestWriteOutput(t *testing.T) {
 }
 
 // fixtureDockerfile writes a minimal Dockerfile that hashes offline (no FROM
-// resolution needed) into a temp dir and returns the dir and the expected
-// 64-hex hash prefix shape.
+// resolution needed) into a temp dir and returns that directory.
 func fixtureDockerfile(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -331,6 +330,28 @@ func TestRun_CheckSubstitutesHashIntoRequestPath(t *testing.T) {
 	}
 	if !sawSubstitution {
 		t.Fatalf("no recorded request path contained %q; paths seen: %v", wantFragment, paths)
+	}
+}
+
+// TestRun_RegistriesConfIgnoredWhenUnused pins the behaviour Copilot
+// flagged: when both --no-resolve-from is set and --check is not used,
+// --registries-conf is ignored outright. Pointing the flag at a
+// nonexistent path must NOT fail the run in that mode.
+func TestRun_RegistriesConfIgnoredWhenUnused(t *testing.T) {
+	dir := fixtureDockerfile(t)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"--no-resolve-from",
+		"--context", dir,
+		"--registries-conf", filepath.Join(dir, "does-not-exist.conf"),
+	}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit code = %d, want %d (registries-conf should be ignored when no flow needs it). stderr: %s",
+			code, exitOK, stderr.String())
+	}
+	out := strings.TrimRight(stdout.String(), "\n")
+	if !hexHashRE.MatchString(out) {
+		t.Errorf("expected a bare hex hash on stdout, got %q", out)
 	}
 }
 

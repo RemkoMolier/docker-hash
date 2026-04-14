@@ -208,9 +208,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 // sharing a single mirror-aware transport between them so --auth-file and
 // --registries-conf apply uniformly to both flows. Errors are printed to
 // stderr so the caller can map them to exitError without additional logic.
+//
+// --registries-conf is only loaded when at least one of the two flows
+// actually needs a transport (resolver or checker); otherwise a stale
+// config file on disk would fail a run that makes no network calls —
+// contradicting the flag's documented "ignored when not used" semantics.
 func buildRegistryClients(registriesConf, platform string, noResolveFrom, needChecker bool, stderr io.Writer) (baseimage.Resolver, *baseimage.Checker, error) {
+	needResolver := !noResolveFrom
 	var mirrorTr http.RoundTripper
-	if registriesConf != "" {
+	if registriesConf != "" && (needResolver || needChecker) {
 		mirrors, err := registrymirrors.Load(registriesConf)
 		if err != nil {
 			errf(stderr, "error: load %s: %v\n", registriesConf, err)
@@ -224,7 +230,7 @@ func buildRegistryClients(registriesConf, platform string, noResolveFrom, needCh
 		mirrorTr = tr
 	}
 	var resolver baseimage.Resolver
-	if !noResolveFrom {
+	if needResolver {
 		resolver = baseimage.NewCachingResolver(&baseimage.RemoteResolver{
 			PlatformOverride: platform,
 			Transport:        mirrorTr,
