@@ -58,30 +58,30 @@ sboms:
     artifacts: archive
 
 # Keyless Sigstore signing for release archives and the checksums file.
-# When args is overridden, the ${artifact}/${signature}/${certificate}
-# placeholders are required; without them cosign wouldn't know what to
-# sign or where to write the outputs.
+# Emits a single `.sigstore.json` bundle per artifact (new cosign bundle
+# format — the Fulcio cert, signature, and Rekor entry are all embedded,
+# so no separate `.pem`/`.sig` files exist). The `signature:` field here
+# is what GoReleaser tracks for upload, and ${artifact}/${signature} are
+# the required placeholders in args.
 signs:
   - id: sign-archives
     cmd: cosign
     artifacts: archive
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.sigstore.json"
     args:
       - "sign-blob"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
+      - "--new-bundle-format"
+      - "--bundle=${signature}"
       - "--yes"
       - "${artifact}"
   - id: sign-checksum
     cmd: cosign
     artifacts: checksum
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.sigstore.json"
     args:
       - "sign-blob"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
+      - "--new-bundle-format"
+      - "--bundle=${signature}"
       - "--yes"
       - "${artifact}"
 

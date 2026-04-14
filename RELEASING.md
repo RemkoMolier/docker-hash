@@ -189,7 +189,7 @@ The tag-triggered release workflow in [.github/workflows/release.yml](.github/wo
 That means the release runner depends on a few things being installed and reachable — most are handled automatically, but worth knowing when debugging a failed release:
 
 - **cosign** — installed by `sigstore/cosign-installer` in the workflow.
-  Used by GoReleaser's `signs:` / `docker_signs:` hooks to produce `*.sig` / `*.pem` files for archives + `checksums.txt` and to sign OCI images + manifests.
+  Used by GoReleaser's `signs:` hook to emit a `*.sigstore.json` bundle (new cosign bundle format — Fulcio cert, signature, and Rekor entry embedded) next to every archive and `checksums.txt`, and by the `docker_signs:` hook to sign OCI images + manifests in-registry.
 - **syft** — installed by `anchore/sbom-action/download-syft` in the workflow.
   Used by GoReleaser's `sboms:` block to emit `*.spdx.sbom.json` + `*.cyclonedx.sbom.json` next to every archive.
 - **Sigstore public-good services** — `fulcio.sigstore.dev` (certificate authority) and `rekor.sigstore.dev` (transparency log) must be reachable from the runner.
