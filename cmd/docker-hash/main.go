@@ -153,7 +153,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := validateModeFlags(hashFlag, checkTemplate, dotenvPrefix); err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		errf(stderr, "error: %v\n", err)
 		return exitError
 	}
 
@@ -163,12 +163,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// matches the Skopeo/Podman/Buildah convention.
 	if authFile != "" {
 		if err := os.Setenv("REGISTRY_AUTH_FILE", authFile); err != nil {
-			fmt.Fprintf(stderr, "error: set REGISTRY_AUTH_FILE: %v\n", err)
+			errf(stderr, "error: set REGISTRY_AUTH_FILE: %v\n", err)
 			return exitError
 		}
 	}
 
-	// Resolve the Dockerfile path relative to context if it is not absolute.
 	if !filepath.IsAbs(dockerfilePath) {
 		candidate := filepath.Join(contextDir, dockerfilePath)
 		if _, err := os.Stat(candidate); err == nil {
@@ -178,36 +177,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	buildArgs := parseBuildArgs(rawBuildArgs)
 
-	// Build the base-image resolver and, when --check is set, a parallel
-	// Checker sharing the same transport + auth stack so mirrors and
-	// --auth-file apply uniformly to both flows.
-	var (
-		resolver baseimage.Resolver
-		checker  *baseimage.Checker
-		mirrorTr http.RoundTripper
-	)
-	if registriesConf != "" {
-		mirrors, err := registrymirrors.Load(registriesConf)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: load %s: %v\n", registriesConf, err)
-			return exitError
-		}
-		tr, err := mirrors.Transport(http.DefaultTransport)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: build mirror transport: %v\n", err)
-			return exitError
-		}
-		mirrorTr = tr
-	}
-	if !noResolveFrom {
-		remote := &baseimage.RemoteResolver{
-			PlatformOverride: platform,
-			Transport:        mirrorTr,
-		}
-		resolver = baseimage.NewCachingResolver(remote)
-	}
-	if checkTemplate != "" {
-		checker = &baseimage.Checker{Transport: mirrorTr}
+	resolver, checker, err := buildRegistryClients(registriesConf, platform, noResolveFrom, checkTemplate != "", stderr)
+	if err != nil {
+		return exitError
 	}
 
 	hash, err := hasher.Compute(hasher.Options{
@@ -219,35 +191,78 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Context:           context.Background(),
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		errf(stderr, "error: %v\n", err)
 		return exitError
 	}
 
-	// Perform registry check, if requested, before emitting any stdout.
-	// That way a registry error (exit 2) leaves stdout empty per the
-	// design proposal.
-	var (
-		exists    bool
-		checkExit int
-	)
-	if checker != nil {
-		ref := strings.ReplaceAll(checkTemplate, "{hash}", hash)
-		err := checker.Check(context.Background(), ref)
-		switch {
-		case err == nil:
-			exists = true
-			checkExit = exitOK
-		case errors.Is(err, baseimage.ErrImageNotFound):
-			exists = false
-			checkExit = exitImageNotFound
-		default:
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return exitRegistryError
-		}
+	exists, checkExit, ok := performCheck(checker, checkTemplate, hash, stderr)
+	if !ok {
+		return exitRegistryError
 	}
 
 	writeOutput(stdout, hash, exists, hashFlag, checker != nil, dotenvPrefix)
 	return checkExit
+}
+
+// buildRegistryClients constructs the FROM-resolution and --check clients,
+// sharing a single mirror-aware transport between them so --auth-file and
+// --registries-conf apply uniformly to both flows. Errors are printed to
+// stderr so the caller can map them to exitError without additional logic.
+func buildRegistryClients(registriesConf, platform string, noResolveFrom, needChecker bool, stderr io.Writer) (baseimage.Resolver, *baseimage.Checker, error) {
+	var mirrorTr http.RoundTripper
+	if registriesConf != "" {
+		mirrors, err := registrymirrors.Load(registriesConf)
+		if err != nil {
+			errf(stderr, "error: load %s: %v\n", registriesConf, err)
+			return nil, nil, err
+		}
+		tr, err := mirrors.Transport(http.DefaultTransport)
+		if err != nil {
+			errf(stderr, "error: build mirror transport: %v\n", err)
+			return nil, nil, err
+		}
+		mirrorTr = tr
+	}
+	var resolver baseimage.Resolver
+	if !noResolveFrom {
+		resolver = baseimage.NewCachingResolver(&baseimage.RemoteResolver{
+			PlatformOverride: platform,
+			Transport:        mirrorTr,
+		})
+	}
+	var checker *baseimage.Checker
+	if needChecker {
+		checker = &baseimage.Checker{Transport: mirrorTr}
+	}
+	return resolver, checker, nil
+}
+
+// performCheck runs the registry existence probe when a checker is
+// configured. The bool result is "ok": false means the caller should
+// return exitRegistryError (error already printed to stderr). When
+// checker is nil, performCheck is a no-op and returns (false, exitOK, true).
+func performCheck(checker *baseimage.Checker, template, hash string, stderr io.Writer) (exists bool, exitCode int, ok bool) {
+	if checker == nil {
+		return false, exitOK, true
+	}
+	ref := strings.ReplaceAll(template, "{hash}", hash)
+	err := checker.Check(context.Background(), ref)
+	switch {
+	case err == nil:
+		return true, exitOK, true
+	case errors.Is(err, baseimage.ErrImageNotFound):
+		return false, exitImageNotFound, true
+	default:
+		errf(stderr, "error: %v\n", err)
+		return false, exitRegistryError, false
+	}
+}
+
+// errf is a convenience wrapper around fmt.Fprintf that drops the return
+// values, matching the project convention (see printVersion) so each
+// error-print site doesn't have to spell out `_, _ =`.
+func errf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
 }
 
 // validateModeFlags enforces the cross-flag invariants from the design
@@ -291,20 +306,20 @@ func isShellIdentifier(s string) bool {
 //	--dotenv P --check T           → PREFIX_HASH=<hash> + PREFIX_EXISTS=yes|no
 func writeOutput(w io.Writer, hash string, exists, hashFlag, checking bool, dotenvPrefix string) {
 	if dotenvPrefix != "" {
-		fmt.Fprintf(w, "%s_HASH=%s\n", dotenvPrefix, hash)
+		errf(w, "%s_HASH=%s\n", dotenvPrefix, hash)
 		if checking {
 			yn := "no"
 			if exists {
 				yn = "yes"
 			}
-			fmt.Fprintf(w, "%s_EXISTS=%s\n", dotenvPrefix, yn)
+			errf(w, "%s_EXISTS=%s\n", dotenvPrefix, yn)
 		}
 		return
 	}
 	// No dotenv. Print the bare hash unless the user only asked for a
 	// registry check (--check with neither --hash nor --dotenv).
 	if !checking || hashFlag {
-		fmt.Fprintln(w, hash)
+		errf(w, "%s\n", hash)
 	}
 }
 

@@ -67,7 +67,7 @@ func TestValidateModeFlags(t *testing.T) {
 			// Early structural check: an unparseable rendered reference
 			// (uppercase in the repo path is not allowed by name.ParseReference)
 			// must fail at flag-validation time, not after hashing.
-			name: "check template renders to invalid reference",
+			name:          "check template renders to invalid reference",
 			checkTemplate: "BadRepo/APP:build-{hash}",
 			wantErr:       "invalid --check template",
 		},
