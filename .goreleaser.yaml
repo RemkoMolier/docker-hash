@@ -129,6 +129,21 @@ scoops:
     license: MIT
     skip_upload: auto
 
+brews:
+  - repository:
+      owner: RemkoMolier
+      name: homebrew-tap
+      token: "{{ .Env.GORELEASER_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/RemkoMolier/docker-hash
+    description: "Compute a deterministic SHA-256 hash for Docker image builds"
+    license: MIT
+    skip_upload: auto
+    test: |
+      system "#{bin}/docker-hash", "--version"
+    install: |
+      bin.install "docker-hash"
+
 release:
   # Auto-detect hyphenated semver suffixes (-rc1, -beta, -alpha, etc.)
   # and mark the GitHub Release as a pre-release accordingly.
