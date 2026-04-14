@@ -92,6 +92,10 @@ Track those overrides here so they are not forgotten:
    The reason is the hash-format change in #44 (FROM digest resolution): every existing v0.1.x hash will produce a different value under the v0.2.0 default behaviour.
    Anyone who pinned a downstream cache key on a v0.1.x hash will see invalidations on upgrade, so the bump needs to be visible.
    The `--no-resolve-from` escape hatch reproduces v0.1.x hashes bit-for-bit for users who need a soft migration.
+- **`v0.3.0` (first release shipping the `homebrew_casks` migration)** — must skip straight from `v0.2.x` to `v0.3.0`, **not** `v0.2.x → v0.2.(x+1)`.
+   The reason is the Homebrew distribution change in #85: we switch from a Homebrew *formula* to a Homebrew *cask*.
+   Existing `brew install remkomolier/tap/docker-hash` users must run a one-time `brew uninstall && brew install --cask …` (or rely on the `tap_migrations.json` entry in the tap — see step 8 of the weekly cadence workflow below), and Linux users lose the `brew` install path altogether and must switch to the `.deb`/`.rpm`/tarball channels.
+   That is a user-visible install-path break, so the bump needs to be visible.
 
 ## Maintainer workflow
 
@@ -124,7 +128,20 @@ Track those overrides here so they are not forgotten:
 7. **First release only — publish the composite action to the GitHub Actions Marketplace.**
    Open the just-published GitHub Release in the browser and tick **Publish this Action to the GitHub Marketplace from this release** at the bottom of the edit form; accept the Marketplace terms and select a category when prompted.
    This is a one-time setup — once the action is listed, every subsequent release is automatically published to the Marketplace listing without further maintainer action.
-8. Once the release is published, the maintainer closes the `release: prepare next release` tracking issue.
+8. **First release after the `brews` → `homebrew_casks` migration only — update the `RemkoMolier/homebrew-tap` repo so existing formula users migrate cleanly.**
+   Before (or together with) the first release that ships the cask, add a `tap_migrations.json` at the tap root and delete the old formula file, as [described in the Homebrew docs](https://docs.brew.sh/Taps#tap-migration):
+
+   ```json
+   { "docker-hash": "docker-hash" }
+   ```
+
+   ```sh
+   git rm Formula/docker-hash.rb
+   ```
+
+   With the migration file in place, `brew upgrade` for existing `brew install remkomolier/tap/docker-hash` users will switch them to the cask automatically; without it they would see a "no such formula" error on the next upgrade.
+   This is a one-time setup — once the cask has shipped and the migration file is in the tap, subsequent releases just overwrite `Casks/docker-hash.rb` via GoReleaser as normal.
+9. Once the release is published, the maintainer closes the `release: prepare next release` tracking issue.
 
 ### Triggering a security release manually
 
