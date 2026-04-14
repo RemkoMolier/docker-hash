@@ -36,7 +36,8 @@ Upgrades are handled automatically by `brew upgrade`.
 > If you originally ran `brew install remkomolier/tap/docker-hash`, run `brew uninstall docker-hash && brew install --cask remkomolier/tap/docker-hash` once to switch to the cask.
 > Subsequent upgrades go through `brew upgrade` as usual.
 >
-> Linux users on Homebrew: casks are macOS-only, so `docker-hash` is no longer available via `brew` on Linux. Use the `.deb`/`.rpm` package or the release tarball below instead.
+> Linux users on Homebrew: casks are macOS-only, so `docker-hash` is no longer available via `brew` on Linux.
+> Use the `.deb`/`.rpm` package or the release tarball below instead.
 
 ### From releases (Linux / macOS)
 

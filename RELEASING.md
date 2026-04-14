@@ -94,7 +94,7 @@ Track those overrides here so they are not forgotten:
    The `--no-resolve-from` escape hatch reproduces v0.1.x hashes bit-for-bit for users who need a soft migration.
 - **`v0.3.0` (first release shipping the `homebrew_casks` migration)** — must skip straight from `v0.2.x` to `v0.3.0`, **not** `v0.2.x → v0.2.(x+1)`.
    The reason is the Homebrew distribution change in #85: we switch from a Homebrew *formula* to a Homebrew *cask*.
-   Existing `brew install remkomolier/tap/docker-hash` users must run a one-time `brew uninstall && brew install --cask …` (or rely on the `tap_migrations.json` entry in the tap — see step 8 of the weekly cadence workflow below), and Linux users lose the `brew` install path altogether and must switch to the `.deb`/`.rpm`/tarball channels.
+   Existing `brew install remkomolier/tap/docker-hash` users must run a one-time `brew uninstall docker-hash && brew install --cask remkomolier/tap/docker-hash` (or rely on the `tap_migrations.json` entry in the tap — see step 8 of the weekly cadence workflow below), and Linux users lose the `brew` install path altogether and must switch to the `.deb`/`.rpm`/tarball channels.
    That is a user-visible install-path break, so the bump needs to be visible.
 
 ## Maintainer workflow
