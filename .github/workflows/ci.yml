@@ -201,6 +201,9 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
+          # CVE allow-list with justification + exit condition per line.
+          # See .trivyignore at the repo root.
+          trivyignores: .trivyignore
 
   action-self-test:
     name: Action self-test
