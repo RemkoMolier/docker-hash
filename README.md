@@ -47,6 +47,30 @@ scoop bucket add docker-hash https://github.com/RemkoMolier/scoop-docker-hash.gi
 scoop install docker-hash
 ```
 
+### Debian / Ubuntu (`.deb` package)
+
+`.deb` packages are published as GitHub Release assets alongside the tarballs.
+
+```sh
+# Replace vX.Y.Z and amd64 with the version and architecture you need.
+curl -sSLO https://github.com/RemkoMolier/docker-hash/releases/download/vX.Y.Z/docker-hash_vX.Y.Z_linux_amd64.deb
+sudo dpkg -i docker-hash_vX.Y.Z_linux_amd64.deb
+```
+
+The binary is installed to `/usr/bin/docker-hash`.
+
+### Fedora / RHEL / CentOS (`.rpm` package)
+
+`.rpm` packages are also published as GitHub Release assets.
+
+```sh
+# Replace vX.Y.Z and x86_64 with the version and architecture you need.
+curl -sSLO https://github.com/RemkoMolier/docker-hash/releases/download/vX.Y.Z/docker-hash_vX.Y.Z_linux_x86_64.rpm
+sudo rpm -Uvh docker-hash_vX.Y.Z_linux_x86_64.rpm
+```
+
+The binary is installed to `/usr/bin/docker-hash`.
+
 ### Using `go install`
 
 ```sh

@@ -76,6 +76,22 @@ changelog:
     exclude:
       - "^(docs|chore|test|ci|style)(\\(.*\\))?:"
 
+nfpms:
+  - id: docker-hash
+    package_name: docker-hash
+    vendor: Remko Molier
+    homepage: https://github.com/RemkoMolier/docker-hash
+    maintainer: Remko Molier <remko@molier.dev>
+    description: "Compute a deterministic SHA-256 hash for Docker image builds"
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    section: utils
+    rpm:
+      group: Development/Tools
+
 dockers_v2:
   - id: docker-hash
     ids:
