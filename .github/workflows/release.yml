@@ -11,25 +11,23 @@ on:
       # inside that step, not in the trigger.
       - 'v*.*.*'
 
+# Keep the workflow-default GITHUB_TOKEN scope minimal. Write scopes live on
+# the job below so Scorecard's Token-Permissions check passes (top-level
+# `contents: write` / `packages: write` scored 0) while preserving the same
+# runtime privileges.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  packages: write
-  actions: none
-  checks: none
-  deployments: none
-  issues: none
-  pull-requests: none
-  repository-projects: none
-  security-events: none
-  statuses: none
+  contents: read
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      packages: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
