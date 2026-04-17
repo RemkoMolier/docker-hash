@@ -10,6 +10,10 @@ on:
       # (`^v[0-9]+\.[0-9]+\.[0-9]+$`, plus pre-release handling) lives
       # inside that step, not in the trigger.
       - 'v*.*.*'
+  # The auto-release workflow dispatches this workflow after pushing a
+  # tag, because GITHUB_TOKEN-created tag pushes do not trigger other
+  # workflows. Manual dispatch with --ref <tag> also works for reruns.
+  workflow_dispatch: {}
 
 # Keep the workflow-default GITHUB_TOKEN scope minimal. Write scopes live on
 # the job below so Scorecard's Token-Permissions check passes (top-level

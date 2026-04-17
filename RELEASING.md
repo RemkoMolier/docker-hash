@@ -167,21 +167,76 @@ gh workflow run release-cadence.yml
 
 The workflow accepts a free-form `reason` input that just ends up in the workflow log so you can find it later.
 
+## Daily auto-release
+
+In addition to the weekly release train (which only opens a tracking issue), a daily auto-release workflow runs at **06:00 UTC** and automatically cuts a **patch** release when container-affecting changes have landed since the last tag.
+
+### What triggers an auto-release
+
+The auto-release fires when **any** of the following is true for the commits since the latest `v*` tag:
+
+| Trigger | Example |
+|---|---|
+| Changed files that affect the binary or container image: `Dockerfile`, `go.mod`, `go.sum`, `*.go`, `action.yml` | Alpine digest refresh, Go toolchain bump, bug fix |
+| A merged PR in the range carries the `security` label | Security-driven dependency bump, auth fix |
+
+If none of these triggers match — for instance, the only changes are CI workflow tweaks, Renovate config, or docs — no release is cut.
+
+### What it does NOT release
+
+| Change type | Changed paths | Auto-release? |
+|---|---|---|
+| CI workflow updates | `.github/workflows/*` | No |
+| Renovate config | `renovate.json` | No |
+| Documentation | `*.md` | No |
+
+### Safety guards
+
+- **Patch only** — the workflow never bumps minor or major.
+  If a minor or major bump is needed, the maintainer must tag manually.
+- **Dry-run log** — the workflow prints the full commit list and computed version before actually tagging.
+- **HEAD already tagged** — if HEAD is the same commit as the latest tag, the workflow exits immediately.
+- **CI must be green** — the workflow checks the most recent CI run on `main` and skips if it is not `success`.
+- **`GITHUB_TOKEN` tag push + `workflow_dispatch`** — because `GITHUB_TOKEN`-created tag pushes do not trigger other workflows, the auto-release explicitly dispatches the release workflow via `gh workflow run release.yml --ref <tag>` after pushing the tag.
+
+### Interaction with the weekly cadence workflow
+
+The two workflows are complementary:
+
+- **`release-cadence`** (weekly, Tuesdays) opens a *tracking issue* for the maintainer to review and decide whether to tag.
+  It considers Conventional Commit types (feat/fix/perf/etc.) and can recommend minor or major bumps.
+- **`auto-release`** (daily, 06:00 UTC) *automatically tags and releases* when container-affecting paths change.
+  It only ever bumps the patch version.
+
+If a daily auto-release fires before the next Tuesday, the weekly cadence run will see no unreleased commits and exit silently.
+
+### Manual trigger
+
+To trigger the auto-release check outside the daily schedule:
+
+```sh
+gh workflow run auto-release.yml
+```
+
+### Disabling auto-release
+
+To temporarily disable auto-release without removing the workflow file, add the `schedule` trigger to the workflow's `concurrency` group or comment out the `cron` line in [.github/workflows/auto-release.yml](.github/workflows/auto-release.yml).
+
 ## What this policy explicitly does NOT do
 
-- **No automatic tag push.**
-  Unattended tagging is too aggressive for this project today.
-  Every release is a maintainer decision; the workflow only prepares the tracking artifact.
-- **No automatic semver calculation beyond the simple type-prefix rule above.**
-  If you want a different version than the recommendation, just pick it.
+- **No automatic minor or major version bumps.**
+  The auto-release workflow only bumps patch.
+  Minor and major bumps remain a maintainer decision via the weekly cadence workflow and manual tagging.
 - **No release-please / Changesets / other release-management framework.**
   The workflow is intentionally a single bash script in YAML; if it grows past that, that's the signal to revisit.
 
 ## Adjusting the policy
 
 If you want to change the day or time of the weekly slot, edit the `cron:` line in [.github/workflows/release-cadence.yml](.github/workflows/release-cadence.yml).
-If you want to change the "releasable" type list, edit the `RELEASABLE_TYPES_RE` variable in the same file and update the list above to match.
-If you want to change the security signal from a label to a different mechanism (e.g. PR title prefix), edit the workflow's "security flag detection" step.
+If you want to change the time of the daily auto-release, edit the `cron:` line in [.github/workflows/auto-release.yml](.github/workflows/auto-release.yml).
+If you want to change which paths trigger an auto-release, edit the `RELEASE_WORTHY_RE` variable in the auto-release workflow.
+If you want to change the "releasable" type list for the weekly cadence, edit the `RELEASABLE_TYPES_RE` variable in the cadence workflow and update the list above to match.
+If you want to change the security signal from a label to a different mechanism (e.g. PR title prefix), edit the security detection steps in both workflows.
 
 ## Supply-chain requirements at release time
 
@@ -203,6 +258,8 @@ In that case, delete the GitHub Release + pushed tags and re-run after fixing th
 ## References
 
 - Issue [#38](https://github.com/RemkoMolier/docker-hash/issues/38) — original release-train proposal.
-- [.github/workflows/release.yml](.github/workflows/release.yml) — the existing tag-triggered release pipeline.
+- Issue [#102](https://github.com/RemkoMolier/docker-hash/issues/102) — daily auto-release proposal.
+- [.github/workflows/release.yml](.github/workflows/release.yml) — the tag-triggered release pipeline.
 - [.github/workflows/release-cadence.yml](.github/workflows/release-cadence.yml) — the weekly cadence workflow.
+- [.github/workflows/auto-release.yml](.github/workflows/auto-release.yml) — the daily auto-release workflow.
 - [SECURITY.md](SECURITY.md) — supply-chain posture and vulnerability-reporting policy.
