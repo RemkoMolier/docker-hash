@@ -1,0 +1,11 @@
+{
+  "name": "docker-hash-markdownlint",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned markdownlint dependencies for CI",
+  "license": "MIT",
+  "dependencies": {
+    "markdownlint-cli2": "0.22.0",
+    "markdownlint-rule-max-one-sentence-per-line": "0.0.2"
+  }
+}
