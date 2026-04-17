@@ -14,8 +14,120 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go_source: ${{ steps.filter.outputs.go_source }}
+      docs: ${{ steps.filter.outputs.docs }}
+      container_action: ${{ steps.filter.outputs.container_action }}
+      deps: ${{ steps.filter.outputs.deps }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Compute changed path groups
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request)
+              BASE_SHA="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+              HEAD_SHA="$PR_HEAD_SHA"
+              ;;
+            merge_group)
+              BASE_SHA="$MERGE_GROUP_BASE_SHA"
+              HEAD_SHA="$GITHUB_SHA"
+              ;;
+            push)
+              BASE_SHA="$PUSH_BEFORE_SHA"
+              HEAD_SHA="$GITHUB_SHA"
+              ;;
+            *)
+              echo "::error::Unsupported event: $EVENT_NAME"
+              exit 1
+              ;;
+          esac
+
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            if git rev-parse "$HEAD_SHA^1" >/dev/null 2>&1; then
+              echo "Base SHA missing; using parent of HEAD for diff range."
+              BASE_SHA="$(git rev-parse "$HEAD_SHA^1")"
+            else
+              echo "Base SHA missing and HEAD has no parent; using root commit."
+              BASE_SHA="$(git rev-list --max-parents=0 "$HEAD_SHA" | head -n1)"
+            fi
+          fi
+
+          if ! git cat-file -e "${BASE_SHA}^{commit}" || ! git cat-file -e "${HEAD_SHA}^{commit}"; then
+            echo "::warning::Could not resolve base/head commits; defaulting to run all path-gated jobs."
+            {
+              echo "go_source=true"
+              echo "docs=true"
+              echo "container_action=true"
+              echo "deps=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/changed_files.txt
+          cat /tmp/changed_files.txt
+
+          has_match() {
+            local pattern="$1"
+            grep -Eq "$pattern" /tmp/changed_files.txt
+          }
+
+          go_source=false
+          docs=false
+          container_action=false
+          deps=false
+
+          if has_match '\.go$|^go\.mod$|^go\.sum$|^\.golangci\.yml$'; then
+            go_source=true
+          fi
+
+          if has_match '\.md$|^\.markdownlint-cli2\.yaml$'; then
+            docs=true
+          fi
+
+          if has_match '^Dockerfile$|^action\.yml$|^testdata/action/'; then
+            container_action=true
+          fi
+
+          if has_match '^go\.mod$|^go\.sum$|^renovate\.json$'; then
+            deps=true
+          fi
+
+          if [[ "$go_source" == "false" && "$docs" == "false" && \
+                "$container_action" == "false" && "$deps" == "false" ]]; then
+            echo "No recognized path group matched; running all jobs."
+            go_source=true
+            docs=true
+            container_action=true
+            deps=true
+          fi
+
+          {
+            echo "go_source=$go_source"
+            echo "docs=$docs"
+            echo "container_action=$container_action"
+            echo "deps=$deps"
+          } >> "$GITHUB_OUTPUT"
+
   test:
     name: Test
+    needs: changes
+    if: needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -28,6 +140,8 @@ jobs:
 
   fuzz:
     name: Fuzz
+    needs: changes
+    if: needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -49,9 +163,10 @@ jobs:
 
   dependency-review:
     name: Dependency Review
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && (needs.changes.outputs.go_source == 'true' || needs.changes.outputs.deps == 'true')
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
@@ -60,6 +175,8 @@ jobs:
 
   vet:
     name: Vet
+    needs: changes
+    if: needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -72,6 +189,8 @@ jobs:
 
   lint:
     name: Lint
+    needs: changes
+    if: needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -87,6 +206,8 @@ jobs:
 
   build:
     name: Build
+    needs: changes
+    if: needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -107,6 +228,8 @@ jobs:
 
   mod-tidy:
     name: Module hygiene
+    needs: changes
+    if: needs.changes.outputs.go_source == 'true' || needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -121,6 +244,8 @@ jobs:
 
   markdown-lint:
     name: Markdown lint
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -178,6 +303,8 @@ jobs:
 
   codeql:
     name: CodeQL
+    needs: changes
+    if: needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -196,6 +323,8 @@ jobs:
 
   trivy:
     name: Image Scan
+    needs: changes
+    if: needs.changes.outputs.container_action == 'true' || needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -226,6 +355,8 @@ jobs:
 
   action-self-test:
     name: Action self-test
+    needs: changes
+    if: needs.changes.outputs.container_action == 'true' || needs.changes.outputs.go_source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
