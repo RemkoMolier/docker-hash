@@ -254,20 +254,19 @@ jobs:
         with:
           node-version: "24"
       - name: Install markdownlint-cli2 + custom rules
-        # Install into a tmp prefix outside the repo checkout so no Node
-        # tooling files (package.json, package-lock.json, node_modules/)
-        # ever land in the working tree. --ignore-scripts blocks third-
-        # party install hooks for supply-chain hardening.
-        # Renovate can manage these pinned versions via a custom regex
-        # manager if desired.
+        # Install into a tmp prefix outside the repo checkout so no
+        # node_modules/ ever lands in the working tree. Dependencies are
+        # pinned by integrity hash via .github/markdownlint/package-lock.json.
+        # --ignore-scripts blocks third-party install hooks for supply-chain
+        # hardening.
         run: |
           PREFIX=$(mktemp -d /tmp/mdlint.XXXXXX)
           echo "MDLINT_PREFIX=$PREFIX" >> "$GITHUB_ENV"
+          cp .github/markdownlint/package.json \
+            .github/markdownlint/package-lock.json \
+            "$PREFIX"/
           cd "$PREFIX"
-          npm init -y >/dev/null
-          npm install --no-save --silent --ignore-scripts \
-            markdownlint-cli2@0.22.0 \
-            markdownlint-rule-max-one-sentence-per-line@0.0.2
+          npm ci --silent --ignore-scripts
       - name: Run markdownlint
         # Run from the repo root so .markdownlint-cli2.yaml and the
         # **/*.md glob resolve relative to the checkout. NODE_PATH lets
