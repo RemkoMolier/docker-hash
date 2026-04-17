@@ -108,6 +108,15 @@ jobs:
             deps=true
           fi
 
+          if [[ "$go_source" == "false" && "$docs" == "false" && \
+                "$container_action" == "false" && "$deps" == "false" ]]; then
+            echo "No recognized path group matched; running all jobs."
+            go_source=true
+            docs=true
+            container_action=true
+            deps=true
+          fi
+
           {
             echo "go_source=$go_source"
             echo "docs=$docs"
