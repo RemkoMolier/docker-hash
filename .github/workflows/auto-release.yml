@@ -39,9 +39,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          LATEST_TAG="$(
+            git tag --list 'v*' --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | head -n1
+          )"
           if [[ -z "$LATEST_TAG" ]]; then
-            echo "No v* tags found — nothing to release against."
+            echo "No stable release tags found matching vMAJOR.MINOR.PATCH — nothing to release against."
             echo "has_commits=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -169,21 +173,38 @@ jobs:
           HEAD_SHA="$(git rev-parse HEAD)"
           echo "Checking CI status for $HEAD_SHA..."
 
-          # Check the most recent CI workflow run on main.
-          CONCLUSION="$(gh run list \
+          # Check the CI workflow run for the exact HEAD commit, not merely
+          # the most recent run on main.
+          RUN_STATUS="$(gh run list \
             --workflow=ci.yml \
             --branch=main \
-            --limit=1 \
-            --json conclusion \
-            --jq '.[0].conclusion // empty')"
+            --json headSha,status,conclusion \
+            --jq 'map(select(.headSha == "'"$HEAD_SHA"'")) | .[0].status // empty')"
+          RUN_CONCLUSION="$(gh run list \
+            --workflow=ci.yml \
+            --branch=main \
+            --json headSha,status,conclusion \
+            --jq 'map(select(.headSha == "'"$HEAD_SHA"'")) | .[0].conclusion // empty')"
 
-          if [[ "$CONCLUSION" != "success" ]]; then
-            echo "::warning::CI on main is not green (conclusion: ${CONCLUSION:-unknown}). Skipping auto-release."
+          if [[ -z "$RUN_STATUS" ]]; then
+            echo "::warning::No ci.yml run found for HEAD $HEAD_SHA. Skipping auto-release."
             echo "ci_green=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "CI is green."
+          if [[ "$RUN_STATUS" != "completed" ]]; then
+            echo "::warning::CI for HEAD $HEAD_SHA is not complete yet (status: $RUN_STATUS). Skipping auto-release."
+            echo "ci_green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$RUN_CONCLUSION" != "success" ]]; then
+            echo "::warning::CI for HEAD $HEAD_SHA is not green (conclusion: ${RUN_CONCLUSION:-unknown}). Skipping auto-release."
+            echo "ci_green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "CI is green for $HEAD_SHA."
           echo "ci_green=true" >> "$GITHUB_OUTPUT"
 
       - name: Compute next patch version
@@ -231,6 +252,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$NEXT_VERSION" -m "docker-hash $NEXT_VERSION"
           git push origin "$NEXT_VERSION"
 

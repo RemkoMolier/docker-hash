@@ -220,7 +220,7 @@ gh workflow run auto-release.yml
 
 ### Disabling auto-release
 
-To temporarily disable auto-release without removing the workflow file, add the `schedule` trigger to the workflow's `concurrency` group or comment out the `cron` line in [.github/workflows/auto-release.yml](.github/workflows/auto-release.yml).
+To temporarily disable auto-release without removing the workflow file, either comment out or remove the `schedule` block (or its `cron` line) in [.github/workflows/auto-release.yml](.github/workflows/auto-release.yml), or add an `if:` guard in that workflow so scheduled runs are skipped when `github.event_name == 'schedule'`.
 
 ## What this policy explicitly does NOT do
 
