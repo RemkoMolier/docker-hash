@@ -1,0 +1,68 @@
+name: Rebase automerge PRs
+
+# When main moves forward, rebase any open PRs that have automerge
+# enabled so they stay up-to-date and can merge once checks pass.
+# This replaces the merge-queue behaviour that requires a paid plan.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  rebase:
+    name: Rebase automerge PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Find and rebase automerge PRs behind main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # List open PRs with automerge enabled.
+          PRS="$(gh pr list \
+            --json number,autoMergeRequest,headRefName \
+            --jq '[.[] | select(.autoMergeRequest != null)] | sort_by(.number)')"
+
+          COUNT="$(echo "$PRS" | jq length)"
+          if [[ "$COUNT" -eq 0 ]]; then
+            echo "No open PRs with automerge enabled — nothing to rebase."
+            exit 0
+          fi
+
+          echo "Found $COUNT automerge PR(s):"
+          echo "$PRS" | jq -r '.[] | "  #\(.number) (\(.headRefName))"'
+
+          FAILED=0
+          for PR_NUMBER in $(echo "$PRS" | jq -r '.[].number'); do
+            echo
+            echo "--- Rebasing PR #$PR_NUMBER ---"
+
+            # Check if the PR is actually behind main.
+            MERGEABLE_STATE="$(gh pr view "$PR_NUMBER" \
+              --json mergeStateStatus \
+              --jq '.mergeStateStatus')"
+
+            if [[ "$MERGEABLE_STATE" == "BEHIND" || "$MERGEABLE_STATE" == "DIRTY" ]]; then
+              echo "PR #$PR_NUMBER is $MERGEABLE_STATE, rebasing..."
+              if gh pr update-branch "$PR_NUMBER" --rebase 2>&1; then
+                echo "PR #$PR_NUMBER rebased successfully."
+              else
+                echo "::warning::Failed to rebase PR #$PR_NUMBER (may have conflicts)."
+                FAILED=$((FAILED + 1))
+              fi
+            else
+              echo "PR #$PR_NUMBER is $MERGEABLE_STATE — no rebase needed."
+            fi
+          done
+
+          if [[ "$FAILED" -gt 0 ]]; then
+            echo "::warning::$FAILED PR(s) failed to rebase (likely conflicts)."
+          fi
