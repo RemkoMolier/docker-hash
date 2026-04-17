@@ -86,7 +86,7 @@ The job will fail your PR if a line contains more than one sentence.
 To run the same check locally before pushing, install into a temporary directory so no `node_modules/` lands in the repo checkout:
 
 ```sh
-PREFIX=$(mktemp -d)
+PREFIX=$(mktemp -d /tmp/mdlint.XXXXXX)
 (cp .github/markdownlint/package.json .github/markdownlint/package-lock.json "$PREFIX"/ && \
   cd "$PREFIX" && \
   npm ci --ignore-scripts)
