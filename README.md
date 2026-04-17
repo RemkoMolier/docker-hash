@@ -114,7 +114,7 @@ Published image: `ghcr.io/remkomolier/docker-hash`
 
 ```yaml
 compute_hash:
-  image: ghcr.io/remkomolier/docker-hash:v0
+  image: ghcr.io/remkomolier/docker-hash:v0.3.1
   script:
     - docker-hash --file Dockerfile --context .
 ```
@@ -125,7 +125,7 @@ compute_hash:
 docker run --rm \
   -v "$PWD:/work" \
   -w /work \
-  ghcr.io/remkomolier/docker-hash:v0 \
+  ghcr.io/remkomolier/docker-hash:v0.3.1 \
   docker-hash --file Dockerfile --context .
 ```
 
@@ -224,7 +224,7 @@ The `file` and `context` inputs are resolved relative to the workflow's checkout
 
 - name: Compute Docker hash
   id: docker_hash
-  uses: RemkoMolier/docker-hash@v0
+  uses: RemkoMolier/docker-hash@v0.3.1
   with:
     file: Dockerfile
     context: .
@@ -244,7 +244,7 @@ When you want a later step to consume the hash via a fixed environment variable 
 - uses: actions/checkout@v6
 
 - name: Compute Docker hash
-  uses: RemkoMolier/docker-hash@v0
+  uses: RemkoMolier/docker-hash@v0.3.1
   with:
     context: ./services/api
     export-env-name: API_IMAGE_HASH
@@ -284,7 +284,7 @@ ARG/ENV expansion still happens and the section-4 base-image contribution is sti
 - uses: actions/checkout@v6
 
 - name: Compute Docker hash (offline mode)
-  uses: RemkoMolier/docker-hash@v0
+  uses: RemkoMolier/docker-hash@v0.3.1
   with:
     no-resolve-from: "true"
 ```
@@ -293,7 +293,7 @@ To reproduce the v0.1.x hash format bit-for-bit, set **both** `no-resolve-from` 
 
 ```yaml
 - name: Compute Docker hash (v0.1.x compat)
-  uses: RemkoMolier/docker-hash@v0
+  uses: RemkoMolier/docker-hash@v0.3.1
   with:
     no-resolve-from: "true"
     no-expand-args: "true"
@@ -305,7 +305,7 @@ For a workflow that needs a specific platform's manifest:
 - uses: actions/checkout@v6
 
 - name: Compute Docker hash for linux/amd64 only
-  uses: RemkoMolier/docker-hash@v0
+  uses: RemkoMolier/docker-hash@v0.3.1
   with:
     platform: linux/amd64
 ```
