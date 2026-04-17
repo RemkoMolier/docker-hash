@@ -59,9 +59,9 @@ jobs:
           esac
 
           if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-            if git rev-parse "$HEAD_SHA^" >/dev/null 2>&1; then
+            if git rev-parse "$HEAD_SHA^1" >/dev/null 2>&1; then
               echo "Base SHA missing; using parent of HEAD for diff range."
-              BASE_SHA="$(git rev-parse "$HEAD_SHA^")"
+              BASE_SHA="$(git rev-parse "$HEAD_SHA^1")"
             else
               echo "Base SHA missing and HEAD has no parent; using root commit."
               BASE_SHA="$(git rev-list --max-parents=0 "$HEAD_SHA" | head -n1)"
@@ -92,11 +92,11 @@ jobs:
           container_action=false
           deps=false
 
-          if has_match '(^|/).*\.go$|^go\.mod$|^go\.sum$|^\.golangci\.yml$'; then
+          if has_match '\.go$|^go\.mod$|^go\.sum$|^\.golangci\.yml$'; then
             go_source=true
           fi
 
-          if has_match '(^|/).*\.md$|^\.markdownlint-cli2\.yaml$'; then
+          if has_match '\.md$|^\.markdownlint-cli2\.yaml$'; then
             docs=true
           fi
 
