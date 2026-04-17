@@ -102,13 +102,10 @@ Most editors with a markdownlint integration will also pick up the same rule set
 
 Renovate opens pull requests for dependency updates across `gomod`, GitHub Actions, and the inline npm versions in CI workflows.
 
-### No automerge
+### Automerge policy
 
-Renovate is explicitly configured with `automerge: false` in [renovate.json](renovate.json).
-**Every dependency update PR requires a human merge.**
-This is a deliberate choice for a small project — manual merging gives every dep bump a quick eyeball before it lands on `main`, and the friction is low because PR volume is low.
-
-GitHub's repo-level `allow_auto_merge` setting is also disabled, so the "auto-merge when ready" button in the PR UI is not available either.
+Minor, patch, pin, and digest updates are auto-merged via GitHub's native auto-merge (`platformAutomerge: true`, `automergeStrategy: squash` in [renovate.json](renovate.json)).
+**Major version bumps still require a human merge** — they are excluded from the automerge rule so you can review changelogs for breaking changes.
 
 ### Patch updates wait 3 days
 
@@ -118,7 +115,7 @@ This catches the most common upstream regression pattern (a freshly-published pa
 
 ### Branch protection
 
-`main` has branch protection enabled with `strict: true`, which means a Renovate PR cannot merge until its branch has been rebased onto current `main` and CI has re-run successfully on that rebased commit.
+`main` is protected by a repository ruleset with `strict` required status checks, which means a Renovate PR cannot merge until its branch has been rebased onto current `main` and CI has re-run successfully on that rebased commit.
 This prevents the broken-main cascade scenario where a stale PR gets merged on top of a broken base.
 
 ### GitHub Actions are SHA-pinned
