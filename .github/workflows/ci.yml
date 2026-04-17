@@ -41,7 +41,7 @@ jobs:
 
           case "$EVENT_NAME" in
             pull_request)
-              BASE_SHA="$PR_BASE_SHA"
+              BASE_SHA="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA")"
               HEAD_SHA="$PR_HEAD_SHA"
               ;;
             merge_group)
