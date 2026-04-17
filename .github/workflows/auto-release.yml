@@ -1,0 +1,297 @@
+name: Auto-release
+
+# Daily check for unreleased container-affecting changes. When found,
+# automatically cuts a patch release by tagging and dispatching the
+# release workflow.
+#
+# See RELEASING.md § "Daily auto-release" for the full policy.
+
+on:
+  schedule:
+    # Daily at 06:00 UTC — early enough for European mornings, before
+    # US East Coast business hours.
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  auto-release:
+    name: Auto-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Determine latest tag and unreleased commits
+        id: status
+        run: |
+          set -euo pipefail
+
+          LATEST_TAG="$(
+            git tag --list 'v*' --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | head -n1
+          )"
+          if [[ -z "$LATEST_TAG" ]]; then
+            echo "No stable release tags found matching vMAJOR.MINOR.PATCH — nothing to release against."
+            echo "has_commits=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          # Check if HEAD is already tagged (prevents double-release).
+          HEAD_SHA="$(git rev-parse HEAD)"
+          TAG_SHA="$(git rev-parse "${LATEST_TAG}^{commit}")"
+          if [[ "$HEAD_SHA" == "$TAG_SHA" ]]; then
+            echo "HEAD ($HEAD_SHA) is already tagged as $LATEST_TAG — nothing to do."
+            echo "has_commits=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          COMMIT_COUNT="$(git rev-list --count "${LATEST_TAG}..HEAD")"
+          if [[ "$COMMIT_COUNT" -eq 0 ]]; then
+            echo "No commits since $LATEST_TAG — nothing to do."
+            echo "has_commits=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Found $COMMIT_COUNT commit(s) since $LATEST_TAG"
+          echo "has_commits=true" >> "$GITHUB_OUTPUT"
+          echo "commit_range=${LATEST_TAG}..HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Classify commits by changed paths
+        id: classify
+        if: steps.status.outputs.has_commits == 'true'
+        env:
+          LATEST_TAG: ${{ steps.status.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+
+          # Collect all files changed in the range.
+          CHANGED_FILES="$(git diff --name-only "${LATEST_TAG}..HEAD")"
+
+          echo "Changed files since $LATEST_TAG:"
+          echo "$CHANGED_FILES"
+          echo
+
+          # Release-worthy: any file that affects the binary or container image.
+          RELEASE_WORTHY_RE='^(Dockerfile|go\.mod|go\.sum|action\.yml|.*\.go)$'
+          RELEASABLE_FILES="$(echo "$CHANGED_FILES" | grep -E "$RELEASE_WORTHY_RE" || true)"
+
+          if [[ -n "$RELEASABLE_FILES" ]]; then
+            echo "Release-worthy file changes detected:"
+            echo "$RELEASABLE_FILES"
+            echo "has_releasable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release-worthy file changes (container/binary unaffected)."
+            echo "has_releasable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect security-labelled PRs in the range
+        id: security
+        if: steps.status.outputs.has_commits == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_RANGE: ${{ steps.status.outputs.commit_range }}
+        run: |
+          set -euo pipefail
+
+          PR_NUMBERS="$(git log --pretty=format:'%s' "$COMMIT_RANGE" \
+            | grep -oE '\(#[0-9]+\)$' \
+            | tr -d '(#)' \
+            | sort -u || true)"
+
+          if [[ -z "$PR_NUMBERS" ]]; then
+            echo "No squash-merged PRs in range."
+            echo "has_security=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SECURITY_PRS=""
+          for pr in $PR_NUMBERS; do
+            META="$(gh pr view "$pr" --json labels,title)"
+            HAS_LABEL="$(echo "$META" | jq -r '[.labels[].name] | index("security") // empty')"
+            if [[ -n "$HAS_LABEL" ]]; then
+              TITLE="$(echo "$META" | jq -r '.title')"
+              SECURITY_PRS+="#${pr} (${TITLE}), "
+            fi
+          done
+
+          if [[ -n "$SECURITY_PRS" ]]; then
+            echo "Security-labelled PRs found: $SECURITY_PRS"
+            echo "has_security=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No security-labelled PRs in range."
+            echo "has_security=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Decide whether to release
+        id: decide
+        if: steps.status.outputs.has_commits == 'true'
+        env:
+          HAS_RELEASABLE: ${{ steps.classify.outputs.has_releasable }}
+          HAS_SECURITY: ${{ steps.security.outputs.has_security }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$HAS_RELEASABLE" == "true" ]]; then
+            echo "Trigger: release-worthy file changes."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$HAS_SECURITY" == "true" ]]; then
+            echo "Trigger: security-labelled PR(s) in range."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "No release-worthy changes and no security PRs — skipping."
+          echo "should_release=false" >> "$GITHUB_OUTPUT"
+
+      - name: Check CI status on HEAD
+        id: ci
+        if: steps.decide.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "Checking CI status for $HEAD_SHA..."
+
+          # Check the CI workflow run for the exact HEAD commit, not merely
+          # the most recent run on main.
+          RUN_STATUS="$(gh run list \
+            --workflow=ci.yml \
+            --branch=main \
+            --json headSha,status,conclusion \
+            --jq 'map(select(.headSha == "'"$HEAD_SHA"'")) | .[0].status // empty')"
+          RUN_CONCLUSION="$(gh run list \
+            --workflow=ci.yml \
+            --branch=main \
+            --json headSha,status,conclusion \
+            --jq 'map(select(.headSha == "'"$HEAD_SHA"'")) | .[0].conclusion // empty')"
+
+          if [[ -z "$RUN_STATUS" ]]; then
+            echo "::warning::No ci.yml run found for HEAD $HEAD_SHA. Skipping auto-release."
+            echo "ci_green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$RUN_STATUS" != "completed" ]]; then
+            echo "::warning::CI for HEAD $HEAD_SHA is not complete yet (status: $RUN_STATUS). Skipping auto-release."
+            echo "ci_green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$RUN_CONCLUSION" != "success" ]]; then
+            echo "::warning::CI for HEAD $HEAD_SHA is not green (conclusion: ${RUN_CONCLUSION:-unknown}). Skipping auto-release."
+            echo "ci_green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "CI is green for $HEAD_SHA."
+          echo "ci_green=true" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next patch version
+        id: version
+        if: steps.decide.outputs.should_release == 'true' && steps.ci.outputs.ci_green == 'true'
+        env:
+          LATEST_TAG: ${{ steps.status.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$LATEST_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Latest tag $LATEST_TAG does not match vMAJOR.MINOR.PATCH — cannot auto-bump."
+            exit 1
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          NEXT="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+          echo "Next version: $NEXT (patch bump from $LATEST_TAG)"
+          echo "next_version=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run summary
+        if: steps.version.outputs.next_version != ''
+        env:
+          LATEST_TAG: ${{ steps.status.outputs.latest_tag }}
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          COMMIT_RANGE: ${{ steps.status.outputs.commit_range }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Auto-release dry-run ==="
+          echo "Latest tag:   $LATEST_TAG"
+          echo "Next version: $NEXT_VERSION"
+          echo "Commits to ship:"
+          git log --oneline "$COMMIT_RANGE"
+          echo "=== End dry-run ==="
+
+      - name: Create and push tag
+        id: tag
+        if: steps.version.outputs.next_version != ''
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEXT_VERSION" -m "docker-hash $NEXT_VERSION"
+          git push origin "$NEXT_VERSION"
+
+          echo "Tagged and pushed $NEXT_VERSION"
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger release workflow
+        if: steps.tag.outputs.tagged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          set -euo pipefail
+
+          echo "Dispatching release workflow for $NEXT_VERSION..."
+          gh workflow run release.yml --ref "$NEXT_VERSION"
+          echo "Release workflow dispatched."
+
+      - name: Summary
+        if: always()
+        env:
+          HAS_COMMITS: ${{ steps.status.outputs.has_commits }}
+          LATEST_TAG: ${{ steps.status.outputs.latest_tag }}
+          SHOULD_RELEASE: ${{ steps.decide.outputs.should_release }}
+          CI_GREEN: ${{ steps.ci.outputs.ci_green }}
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          TAGGED: ${{ steps.tag.outputs.tagged }}
+        run: |
+          {
+            echo "## Auto-release run"
+            echo
+            echo "- **Latest tag:** ${LATEST_TAG:-(none)}"
+            echo "- **Unreleased commits:** ${HAS_COMMITS:-false}"
+            echo "- **Release-worthy:** ${SHOULD_RELEASE:-false}"
+            echo "- **CI green:** ${CI_GREEN:-skipped}"
+            if [[ "${TAGGED:-}" == "true" ]]; then
+              echo "- **Released:** ${NEXT_VERSION}"
+            else
+              echo "- **Released:** no"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
