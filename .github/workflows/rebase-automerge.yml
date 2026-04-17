@@ -12,6 +12,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
   rebase:
     name: Rebase automerge PRs
@@ -28,6 +32,7 @@ jobs:
 
           # List open PRs with automerge enabled.
           PRS="$(gh pr list \
+            --limit 200 \
             --json number,autoMergeRequest,headRefName \
             --jq '[.[] | select(.autoMergeRequest != null)] | sort_by(.number)')"
 
