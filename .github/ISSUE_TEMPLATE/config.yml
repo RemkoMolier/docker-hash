@@ -5,4 +5,4 @@ contact_links:
     about: Please report vulnerabilities privately via GitHub Private Vulnerability Reporting.
   - name: Support resources
     url: https://github.com/RemkoMolier/docker-hash/blob/main/CONTRIBUTING.md
-    about: If Discussions are unavailable, check CONTRIBUTING.md and README.md first.
+    about: If Discussions are unavailable, check CONTRIBUTING.md first.
