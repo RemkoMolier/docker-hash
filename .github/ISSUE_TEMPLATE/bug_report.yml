@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible problem with docker-hash.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report.
+        Please include a minimal reproduction so maintainers can triage quickly.
+
+  - type: input
+    id: version
+    attributes:
+      label: docker-hash version
+      description: Release tag (for example v0.3.1) or commit SHA.
+      placeholder: v0.3.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: invocation_mode
+    attributes:
+      label: Invocation mode
+      description: How are you running docker-hash?
+      options:
+        - CLI binary
+        - Composite action
+        - OCI image
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal Dockerfile and reproduction steps
+      description: Include a minimal Dockerfile, command(s), and any relevant build args/context.
+      placeholder: |
+        # Dockerfile
+        FROM alpine:3.21
+        COPY hello.txt /hello.txt
+
+        # Repro
+        docker-hash --file Dockerfile --context .
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs actual hash or exit code
+      description: Include both expected and actual outputs, including exit codes if relevant.
+      placeholder: |
+        Expected hash/exit code:
+        Actual hash/exit code:
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment details
+      description: Include OS details; include Go version if you built the CLI from source.
+      placeholder: |
+        OS:
+        Go version (if built from source):
+        Shell/runner:
+    validations:
+      required: true
