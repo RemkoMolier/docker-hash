@@ -4,6 +4,7 @@
 
 We take the security of `docker-hash` seriously.
 If you discover a security vulnerability, please report it via the [GitHub Private Vulnerability Reporting](https://github.com/RemkoMolier/docker-hash/security/advisories/new) workflow.
+If you cannot use private reporting, email: [remko@molier.dev](mailto:remko@molier.dev).
 
 Please provide:
 
