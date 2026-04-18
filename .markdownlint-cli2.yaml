@@ -2,7 +2,7 @@
 #
 # Rule reference:    https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
 # cli2 config docs:  https://github.com/DavidAnson/markdownlint-cli2#configuration
-# CI integration:    .github/workflows/ci.yml (markdown-lint job)
+# CI integration:    .github/workflows/ci.yml (lefthook via test job)
 
 config:
   # Inherit all default markdownlint rules.
@@ -26,7 +26,7 @@ config:
   # width.
   MD060: false
 
-# Custom rules. Installed by the markdown-lint CI job via `npm install`.
+# Custom rules. Installed via `mise` (see .mise.toml).
 #
 # - markdownlint-rule-max-one-sentence-per-line: enforces the semantic
 #   line break convention by erroring whenever two sentences appear on
@@ -35,7 +35,7 @@ config:
 customRules:
   - markdownlint-rule-max-one-sentence-per-line
 
-# Always exclude the local `node_modules` directory that the CI job and
-# any local dev install create when running markdownlint.
+# Always exclude any local `node_modules` directory that local npm usage
+# might create.
 ignores:
   - "node_modules"

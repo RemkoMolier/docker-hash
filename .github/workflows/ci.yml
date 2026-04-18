@@ -127,15 +127,18 @@ jobs:
   test:
     name: Test
     needs: changes
-    if: needs.changes.outputs.go_source == 'true'
+    if: needs.changes.outputs.go_source == 'true' || needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      - name: Run lefthook checks
+        run: lefthook run pre-commit --all-files
+      - name: Ensure lefthook made no unstaged changes
+        run: git diff --exit-code
       - name: Run tests
+        if: needs.changes.outputs.go_source == 'true'
         run: go test ./... -race -count=1
 
   fuzz:
@@ -172,37 +175,6 @@ jobs:
       - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
           fail-on-severity: high
-
-  vet:
-    name: Vet
-    needs: changes
-    if: needs.changes.outputs.go_source == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
-      - name: Run go vet
-        run: go vet ./...
-
-  lint:
-    name: Lint
-    needs: changes
-    if: needs.changes.outputs.go_source == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
-        with:
-          # renovate: datasource=github-releases depName=golangci/golangci-lint
-          version: v2.11.4
 
   build:
     name: Build
@@ -241,39 +213,6 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
-
-  markdown-lint:
-    name: Markdown lint
-    needs: changes
-    if: needs.changes.outputs.docs == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
-        with:
-          node-version: "24"
-      - name: Install markdownlint-cli2 + custom rules
-        # Install into a tmp prefix outside the repo checkout so no
-        # node_modules/ ever lands in the working tree. Dependencies are
-        # pinned by integrity hash via .github/markdownlint/package-lock.json.
-        # --ignore-scripts blocks third-party install hooks for supply-chain
-        # hardening.
-        run: |
-          PREFIX=$(mktemp -d /tmp/mdlint.XXXXXX)
-          echo "MDLINT_PREFIX=$PREFIX" >> "$GITHUB_ENV"
-          cp .github/markdownlint/package.json \
-            .github/markdownlint/package-lock.json \
-            "$PREFIX"/
-          cd "$PREFIX"
-          npm ci --silent --ignore-scripts
-      - name: Run markdownlint
-        # Run from the repo root so .markdownlint-cli2.yaml and the
-        # **/*.md glob resolve relative to the checkout. NODE_PATH lets
-        # the cli2 process require() the custom rule from the tmp prefix.
-        run: |
-          NODE_PATH="$MDLINT_PREFIX/node_modules" \
-            npx --prefix "$MDLINT_PREFIX" markdownlint-cli2 "**/*.md"
 
   scorecard:
     name: OSSF Scorecard

@@ -1,0 +1,12 @@
+[tools]
+go = "1.26.2"
+node = "24"
+"aqua:golangci/golangci-lint" = "2.11.4"
+"aqua:rhysd/actionlint" = "1.7.7"
+"aqua:goreleaser/goreleaser" = "2.15.2"
+"aqua:evilmartians/lefthook" = "1.8.0"
+"npm:markdownlint-cli2" = "0.22.0"
+"npm:markdownlint-rule-max-one-sentence-per-line" = "0.0.2"
+
+[env]
+GOTOOLCHAIN = "go1.26.2"

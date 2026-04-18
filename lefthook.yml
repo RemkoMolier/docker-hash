@@ -1,0 +1,18 @@
+pre-commit:
+  parallel: true
+  commands:
+    gofmt:
+      glob: "**/*.go"
+      run: gofmt -l -w {staged_files}
+      stage_fixed: true
+    golangci-lint:
+      glob: "**/*.go"
+      run: golangci-lint run --new-from-rev=HEAD --fix
+      stage_fixed: true
+    markdownlint:
+      glob: "**/*.md"
+      run: markdownlint-cli2 --fix {staged_files}
+      stage_fixed: true
+    actionlint:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint {staged_files}

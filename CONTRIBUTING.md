@@ -2,6 +2,24 @@
 
 Thank you for your interest in contributing!
 
+## Local tooling bootstrap
+
+Install pinned dev tools and git hooks once per clone:
+
+```sh
+mise install && lefthook install
+```
+
+Run this before pushing:
+
+```sh
+make check
+```
+
+Tool versions are pinned in [.mise.toml](.mise.toml),
+hooks are defined in [lefthook.yml](lefthook.yml),
+and agent bootstrap instructions live in [AGENTS.md](AGENTS.md).
+
 ## Commit and PR title convention
 
 This project follows [Conventional Commits](https://www.conventionalcommits.org/).
@@ -80,22 +98,10 @@ With one sentence per line, only the modified sentence appears in the diff, so r
 
 ### Enforced by CI
 
-The `markdown-lint` job in [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `markdownlint-cli2` against `**/*.md` with the [`markdownlint-rule-max-one-sentence-per-line`](https://github.com/aepfli/markdownlint-rule-max-one-sentence-per-line) custom rule.
-The job will fail your PR if a line contains more than one sentence.
-
-To run the same check locally before pushing, install into a temporary directory so no `node_modules/` lands in the repo checkout:
-
-```sh
-PREFIX=$(mktemp -d /tmp/mdlint.XXXXXX)
-(cp .github/markdownlint/package.json .github/markdownlint/package-lock.json "$PREFIX"/ && \
-  cd "$PREFIX" && \
-  npm ci --ignore-scripts)
-NODE_PATH="$PREFIX/node_modules" \
-  npx --prefix "$PREFIX" markdownlint-cli2 "**/*.md"
-```
-
-The pinned versions and integrity hashes match what CI uses (see `.github/markdownlint/package-lock.json`), and [.markdownlint-cli2.yaml](.markdownlint-cli2.yaml) contains the rule configuration.
-Most editors with a markdownlint integration will also pick up the same rule set automatically (the `MD013: false` and `customRules` settings live in `.markdownlint-cli2.yaml`).
+CI runs `lefthook run pre-commit --all-files`,
+which includes markdownlint with the [`markdownlint-rule-max-one-sentence-per-line`](https://github.com/aepfli/markdownlint-rule-max-one-sentence-per-line) custom rule.
+Run `make check` locally for the same validation flow.
+Rule configuration lives in [.markdownlint-cli2.yaml](.markdownlint-cli2.yaml).
 
 ## Dependency updates
 
