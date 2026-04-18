@@ -7,11 +7,11 @@ pre-commit:
       stage_fixed: true
     golangci-lint:
       glob: "**/*.go"
-      run: golangci-lint run --fix {staged_files}
+      run: sh -c 'dirs=""; for f in {staged_files}; do d=$(dirname "$f"); case " $dirs " in *" $d "*) ;; *) dirs="$dirs ./$d" ;; esac; done; golangci-lint run --fix $dirs'
       stage_fixed: true
     markdownlint:
       glob: "**/*.md"
-      run: npm ci --prefix .github/markdownlint --ignore-scripts --silent && npx --prefix .github/markdownlint markdownlint-cli2 --fix {staged_files}
+      run: sh -c 'if [ ! -d .github/markdownlint/node_modules ]; then npm ci --prefix .github/markdownlint --ignore-scripts --silent; fi; npx --prefix .github/markdownlint markdownlint-cli2 --fix {staged_files}'
       stage_fixed: true
     actionlint:
       glob: ".github/workflows/*.{yml,yaml}"
