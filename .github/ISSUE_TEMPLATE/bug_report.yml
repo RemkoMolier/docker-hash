@@ -38,7 +38,7 @@ body:
       description: Include a minimal Dockerfile, command(s), and any relevant build args/context.
       placeholder: |
         # Dockerfile
-        FROM alpine:3.21
+        FROM alpine:3.23
         COPY hello.txt /hello.txt
 
         # Repro

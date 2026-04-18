@@ -3,9 +3,6 @@ contact_links:
   - name: Security vulnerability report
     url: https://github.com/RemkoMolier/docker-hash/security/advisories/new
     about: Please report vulnerabilities privately via GitHub Private Vulnerability Reporting.
-  - name: Questions and discussions
-    url: https://github.com/RemkoMolier/docker-hash/discussions
-    about: Use Discussions for questions when enabled.
   - name: Support resources
     url: https://github.com/RemkoMolier/docker-hash/blob/main/CONTRIBUTING.md
     about: If Discussions are unavailable, check CONTRIBUTING.md and README.md first.
