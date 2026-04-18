@@ -1,5 +1,4 @@
-# Pull request
-
+<!-- markdownlint-disable-next-line MD041 -->
 ## Summary
 <!-- 1–3 bullets: what changed and why. -->
 
