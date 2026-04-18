@@ -10,10 +10,9 @@
 /vendor/
 
 # Defensive: markdown tooling is installed under .github/markdownlint for
-# CI/hooks, but if anyone runs `npm install` directly in the repo root these
-# would land in the working tree. None of them should ever be committed in
-# this Go repo.
-/node_modules/
+# CI/hooks, and contributors may also run npm commands in subdirectories.
+# Node modules should never be committed in this Go repo.
+node_modules/
 /package.json
 /package-lock.json
 
