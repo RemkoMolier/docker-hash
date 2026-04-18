@@ -13,5 +13,5 @@ lefthook run pre-commit --all-files
 go test ./...
 ```
 
-Tool versions are pinned in [.mise.toml](.mise.toml).
+Tool versions are pinned in [.mise.toml](.mise.toml) and `.github/markdownlint/package-lock.json`.
 Hooks are defined in [lefthook.yml](lefthook.yml).

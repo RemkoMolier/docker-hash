@@ -16,7 +16,7 @@ Run this before pushing:
 make check
 ```
 
-Tool versions are pinned in [.mise.toml](.mise.toml),
+Tool versions are pinned in [.mise.toml](.mise.toml) and `.github/markdownlint/package-lock.json`,
 hooks are defined in [lefthook.yml](lefthook.yml),
 and agent bootstrap instructions live in [AGENTS.md](AGENTS.md).
 

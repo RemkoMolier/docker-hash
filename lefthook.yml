@@ -7,11 +7,11 @@ pre-commit:
       stage_fixed: true
     golangci-lint:
       glob: "**/*.go"
-      run: golangci-lint run --new-from-rev=HEAD --fix
+      run: golangci-lint run --fix {staged_files}
       stage_fixed: true
     markdownlint:
       glob: "**/*.md"
-      run: markdownlint-cli2 --fix {staged_files}
+      run: npm ci --prefix .github/markdownlint --ignore-scripts --silent && npx --prefix .github/markdownlint markdownlint-cli2 --fix {staged_files}
       stage_fixed: true
     actionlint:
       glob: ".github/workflows/*.{yml,yaml}"
