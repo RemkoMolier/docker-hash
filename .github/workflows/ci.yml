@@ -21,6 +21,7 @@ jobs:
     outputs:
       go_source: ${{ steps.filter.outputs.go_source }}
       docs: ${{ steps.filter.outputs.docs }}
+      workflows: ${{ steps.filter.outputs.workflows }}
       container_action: ${{ steps.filter.outputs.container_action }}
       deps: ${{ steps.filter.outputs.deps }}
     steps:
@@ -73,6 +74,7 @@ jobs:
             {
               echo "go_source=true"
               echo "docs=true"
+              echo "workflows=true"
               echo "container_action=true"
               echo "deps=true"
             } >> "$GITHUB_OUTPUT"
@@ -89,6 +91,7 @@ jobs:
 
           go_source=false
           docs=false
+          workflows=false
           container_action=false
           deps=false
 
@@ -100,6 +103,10 @@ jobs:
             docs=true
           fi
 
+          if has_match '^\.github/workflows/.*\.(yml|yaml)$'; then
+            workflows=true
+          fi
+
           if has_match '^Dockerfile$|^action\.yml$|^testdata/action/'; then
             container_action=true
           fi
@@ -109,10 +116,12 @@ jobs:
           fi
 
           if [[ "$go_source" == "false" && "$docs" == "false" && \
-                "$container_action" == "false" && "$deps" == "false" ]]; then
+                "$workflows" == "false" && "$container_action" == "false" && \
+                "$deps" == "false" ]]; then
             echo "No recognized path group matched; running all jobs."
             go_source=true
             docs=true
+            workflows=true
             container_action=true
             deps=true
           fi
@@ -120,6 +129,7 @@ jobs:
           {
             echo "go_source=$go_source"
             echo "docs=$docs"
+            echo "workflows=$workflows"
             echo "container_action=$container_action"
             echo "deps=$deps"
           } >> "$GITHUB_OUTPUT"
@@ -127,15 +137,21 @@ jobs:
   test:
     name: Test
     needs: changes
-    if: needs.changes.outputs.go_source == 'true'
+    if: >-
+      needs.changes.outputs.go_source == 'true' ||
+      needs.changes.outputs.docs == 'true' ||
+      needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      - name: Run lefthook checks
+        run: lefthook run pre-commit --all-files
+      - name: Ensure lefthook made no changes
+        run: git diff --exit-code HEAD
       - name: Run tests
+        if: needs.changes.outputs.go_source == 'true'
         run: go test ./... -race -count=1
 
   fuzz:
@@ -146,9 +162,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
       - name: Run fuzz targets (short)
         # Short per-target fuzztime keeps CI fast; the goal is regression
         # coverage on every PR, not long campaigns. Any committed corpus
@@ -173,37 +187,6 @@ jobs:
         with:
           fail-on-severity: high
 
-  vet:
-    name: Vet
-    needs: changes
-    if: needs.changes.outputs.go_source == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
-      - name: Run go vet
-        run: go vet ./...
-
-  lint:
-    name: Lint
-    needs: changes
-    if: needs.changes.outputs.go_source == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
-        with:
-          # renovate: datasource=github-releases depName=golangci/golangci-lint
-          version: v2.11.4
-
   build:
     name: Build
     needs: changes
@@ -214,9 +197,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
       - name: Build binary
         run: |
           VERSION=$(git describe --tags --always --dirty)
@@ -234,46 +215,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
       - name: Check go mod tidy
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
-
-  markdown-lint:
-    name: Markdown lint
-    needs: changes
-    if: needs.changes.outputs.docs == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
-        with:
-          node-version: "24"
-      - name: Install markdownlint-cli2 + custom rules
-        # Install into a tmp prefix outside the repo checkout so no
-        # node_modules/ ever lands in the working tree. Dependencies are
-        # pinned by integrity hash via .github/markdownlint/package-lock.json.
-        # --ignore-scripts blocks third-party install hooks for supply-chain
-        # hardening.
-        run: |
-          PREFIX=$(mktemp -d /tmp/mdlint.XXXXXX)
-          echo "MDLINT_PREFIX=$PREFIX" >> "$GITHUB_ENV"
-          cp .github/markdownlint/package.json \
-            .github/markdownlint/package-lock.json \
-            "$PREFIX"/
-          cd "$PREFIX"
-          npm ci --silent --ignore-scripts
-      - name: Run markdownlint
-        # Run from the repo root so .markdownlint-cli2.yaml and the
-        # **/*.md glob resolve relative to the checkout. NODE_PATH lets
-        # the cli2 process require() the custom rule from the tmp prefix.
-        run: |
-          NODE_PATH="$MDLINT_PREFIX/node_modules" \
-            npx --prefix "$MDLINT_PREFIX" markdownlint-cli2 "**/*.md"
 
   scorecard:
     name: OSSF Scorecard
@@ -311,9 +257,7 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
       - uses: github/codeql-action/init@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
         with:
           languages: go
@@ -328,9 +272,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
       - name: Stage linux/amd64 binary for Dockerfile
         # The Dockerfile uses `COPY ${TARGETPLATFORM}/docker-hash ...` so the
         # release build via GoReleaser's dockers_v2 can feed one Dockerfile
@@ -360,6 +302,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
 
       - name: Run docker-hash composite action via uses ./
         id: action

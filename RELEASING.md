@@ -99,6 +99,18 @@ Track those overrides here so they are not forgotten:
 
 ## Maintainer workflow
 
+### Local preflight (optional)
+
+Before cutting a tag, you can run a local release dry-run with the same pinned toolchain used by contributors and CI:
+
+```sh
+mise install
+make check
+goreleaser release --snapshot --clean --skip=publish
+```
+
+`goreleaser` is provided by [.mise.toml](.mise.toml), so no separate install step is needed.
+
 ### Weekly cadence (the normal case)
 
 1. The `release-cadence` workflow runs every Tuesday at 10:00 UTC.
