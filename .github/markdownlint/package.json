@@ -5,7 +5,7 @@
   "description": "Pinned markdownlint dependencies for CI",
   "license": "MIT",
   "dependencies": {
-    "markdownlint-cli2": "0.22.0",
+    "markdownlint-cli2": "0.22.1",
     "markdownlint-rule-max-one-sentence-per-line": "0.0.2"
   },
   "overrides": {
