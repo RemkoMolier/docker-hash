@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/google/go-containerregistry v0.21.7
-	github.com/moby/buildkit v0.31.1
+	github.com/moby/buildkit v0.31.2
 	github.com/moby/patternmatcher v0.6.1
 )
 
