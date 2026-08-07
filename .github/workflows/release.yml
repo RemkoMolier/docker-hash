@@ -64,14 +64,14 @@ jobs:
       # on the mutable refs can't skip provenance for artifacts that have
       # already been published to the GitHub Release and GHCR.
       - name: Attest build provenance for release artifacts
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           # Attests each artifact listed inside checksums.txt (the
           # archives, nfpms, and SBOMs).
           subject-checksums: dist/checksums.txt
 
       - name: Attest build provenance for checksums.txt
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           # Separate step so checksums.txt itself also carries provenance
           # — subject-checksums only attests the files listed inside the
