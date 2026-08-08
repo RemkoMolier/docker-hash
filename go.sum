@@ -10,8 +10,8 @@ github.com/docker/docker-credential-helpers v0.9.8 h1:bIREROb7So6PRlq6KTtdS9MPEj
 github.com/docker/docker-credential-helpers v0.9.8/go.mod h1:v1S+hepowrQXITkEfw6o4+BMbGot02wiKpzWhGUZK6c=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
-github.com/google/go-containerregistry v0.21.8 h1:Ig/zIsnztdCUNaiNNczE+MoP5xcyUMfvpvfOr1xyMLE=
-github.com/google/go-containerregistry v0.21.8/go.mod h1:dP5XNKcL7kMFF/TB3LfvWmVhAcv7iqkHb3oDK8aauTo=
+github.com/google/go-containerregistry v0.21.9 h1:F+D4uZ3iA3DLMJLfhaqMdHJbzeqm/216WGQq2dokuLs=
+github.com/google/go-containerregistry v0.21.9/go.mod h1:dP5XNKcL7kMFF/TB3LfvWmVhAcv7iqkHb3oDK8aauTo=
 github.com/klauspost/compress v1.19.1 h1:VsB4HPswih7mmZ8WleSFQ75c/Ui1M4trX5oAsJnhSlk=
 github.com/klauspost/compress v1.19.1/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/moby/buildkit v0.32.2 h1:Sfy7+u6dUv/2yuBc9KCoK70Re8atuV8aPZ5UOC068Vc=
