@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/google/go-containerregistry v0.22.1
-	github.com/moby/buildkit v0.34.1
+	github.com/moby/buildkit v0.34.2
 	github.com/moby/patternmatcher v0.6.1
 )
 
@@ -13,7 +13,7 @@ require (
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
 	github.com/docker/cli v29.8.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.9 // indirect
-	github.com/klauspost/compress v1.20.1 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
